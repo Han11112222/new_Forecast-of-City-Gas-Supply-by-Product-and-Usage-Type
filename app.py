@@ -585,30 +585,10 @@ def main():
     st.title("📊 도시가스 공급·판매량 예측 시스템")
     st.caption("대성에너지(주) 마케팅본부 · Poly-3 기온↔공급량/판매량 회귀 모델")
 
-    # ── 데이터 로드 ──
-    with st.sidebar:
-        st.markdown("### 📥 데이터 로드")
-
+    # ── 데이터 로드 (백그라운드) ──
     supply_df, err1 = load_sheet1_supply()
     temp_daily, err2 = load_sheet2_temperature()
     sales_df, err3   = load_sheet3_sales()
-
-    # 로드 상태
-    with st.sidebar:
-        if err1:
-            st.error(f"❌ 공급량: {err1}")
-        else:
-            st.success(f"✅ 공급량 ({len(supply_df.columns)}개 상품, {len(supply_df)}개월)")
-
-        if err2:
-            st.error(f"❌ 기온: {err2}")
-        else:
-            st.success(f"✅ 일별기온 ({len(temp_daily):,}일)")
-
-        if err3:
-            st.error(f"❌ 판매량: {err3}")
-        else:
-            st.success(f"✅ 판매량 ({len(sales_df)}개월)")
 
     if err1 or err2:
         st.error("공급량 또는 기온 데이터를 불러오지 못했습니다. 구글시트 공유 설정을 확인해주세요.")
@@ -625,13 +605,9 @@ def main():
     available_products = [p for p in PRODUCT_LIST if p in merged.columns]
     years_all = sorted(merged["연"].unique().astype(int))
 
+    # ── 사이드바 구성 ──
     with st.sidebar:
-        st.markdown("---")
-        st.markdown(f"**데이터 기간**: {min(years_all)}~{max(years_all)}년")
-        st.markdown(f"**월 데이터**: {len(merged)}건")
-
-        # ── 메뉴 ──
-        st.markdown("---")
+        # 메뉴 (최상단)
         st.markdown("### 📋 메뉴")
         menu_options = [
             "🎯 학습 기간 추천",
@@ -644,7 +620,7 @@ def main():
             key="main_menu",
         )
 
-        # ── 예상기온 엑셀 업로드 ──
+        # 예상기온 엑셀 업로드
         st.markdown("---")
         st.markdown("### 🌡️ 예상기온 업로드")
         st.caption("미래 기온 예측값 (엑셀: 날짜/연·월, 예상기온 열)")
@@ -658,6 +634,23 @@ def main():
             forecast_temp_df = _parse_uploaded_temp(uploaded_temp)
             if forecast_temp_df is not None:
                 st.success(f"✅ 예상기온 {len(forecast_temp_df)}개월 로드")
+
+        # 데이터 로드 상태 (접이식)
+        st.markdown("---")
+        with st.expander("📥 데이터 로드 상태", expanded=False):
+            if err1:
+                st.error(f"❌ 공급량: {err1}")
+            else:
+                st.success(f"✅ 공급량 ({len(supply_df.columns)}개 상품, {len(supply_df)}개월)")
+            if err2:
+                st.error(f"❌ 기온: {err2}")
+            else:
+                st.success(f"✅ 일별기온 ({len(temp_daily):,}일)")
+            if err3:
+                st.error(f"❌ 판매량: {err3}")
+            else:
+                st.success(f"✅ 판매량 ({len(sales_df)}개월)")
+            st.caption(f"데이터 기간: {min(years_all)}~{max(years_all)}년 · 월 데이터 {len(merged)}건")
 
     # ══════════════════════════════════════════
     # 메뉴별 화면
@@ -723,6 +716,13 @@ def main():
                     line=dict(width=0), fillcolor=palette[i % len(palette)],
                 )
 
+            # Y축 범위를 데이터에 맞게 조정 (직선처럼 보이지 않도록)
+            r2_vals = rec_plot["R2"].dropna().values
+            y_min = max(0, float(r2_vals.min()) - 0.01)
+            y_max = min(1.0, float(r2_vals.max()) + 0.005)
+            if y_max - y_min < 0.02:
+                y_min = max(0, y_max - 0.03)
+
             fig_r.add_trace(go.Scatter(
                 x=rec_plot["시작연도"], y=rec_plot["R2"],
                 mode="lines+markers+text",
@@ -730,15 +730,17 @@ def main():
                 textposition="top center",
                 name="R² (Poly-3)",
                 hovertemplate="시작연도=%{x}<br>R²=%{y:.4f}<extra></extra>",
-                line=dict(color="#2c5f8a", width=2.5),
-                marker=dict(size=9, line=dict(width=1.5, color="white")),
-                fill="tozeroy", fillcolor="rgba(44,95,138,0.07)",
+                line=dict(color="#2c5f8a", width=2.5, shape="spline"),
+                marker=dict(size=9, color="#2c5f8a",
+                            line=dict(width=1.5, color="white")),
             ))
             fig_r.update_layout(**CHART_LAYOUT)
             fig_r.update_layout(
                 title=f"학습 시작연도별 R² — {rec_product} (실적연도={rec_end_year})",
                 xaxis_title="학습 시작연도", yaxis_title="R² (예측 vs 실적)",
                 xaxis_tickmode="linear", xaxis_dtick=1,
+                yaxis_range=[y_min, y_max],
+                yaxis_tickformat=".4f",
                 margin=dict(t=60, b=60),
             )
             st.plotly_chart(fig_r, use_container_width=True,
