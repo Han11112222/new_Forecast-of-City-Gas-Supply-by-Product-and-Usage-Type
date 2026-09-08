@@ -365,17 +365,20 @@ def r2_for_period(merged_df, product, start_year, end_year):
 def recommend_train_ranges(merged_df, product, end_year=None):
     """
     시작연도를 바꿔가며 (start~end) R² 계산 → 추천 학습 기간.
-    반환: DataFrame(columns=[시작연도, 종료연도, 기간, R2])
+    반환: DataFrame(columns=[시작연도, 종료연도, 기간, 추천연도, R2])
     """
     if end_year is None:
         end_year = int(merged_df["연"].max())
     min_year = int(merged_df["연"].min())
     rows = []
     for sy in range(min_year, end_year):
+        n_years = end_year - sy + 1
         r2 = r2_for_period(merged_df, product, sy, end_year)
         rows.append({
             "시작연도": sy, "종료연도": end_year,
-            "기간": f"{sy}~{end_year}", "R2": r2,
+            "기간": f"{sy}~{end_year}",
+            "추천연도": f"최근 {n_years}년",
+            "R2": r2,
         })
     df = pd.DataFrame(rows)
     df = df.sort_values("R2", ascending=False, na_position="last").reset_index(drop=True)
@@ -572,7 +575,7 @@ def main():
             )
         with c2:
             rec_end_year = st.selectbox(
-                "기준 종료연도", options=years_all,
+                "실적연도", options=years_all,
                 index=len(years_all) - 1,
                 key="rec_end_year",
             )
@@ -586,7 +589,33 @@ def main():
             top3 = rec_df.head(3).copy()
             top3.insert(0, "추천순위", range(1, len(top3) + 1))
 
-            render_centered_table(top3, pct_cols=["R2"])
+            # 시작연도/종료연도 삭제, 기간+추천연도+R2만 표시
+            top3_show = top3[["추천순위", "기간", "추천연도", "R2"]].copy()
+            top3_show["R2"] = top3_show["R2"].map(
+                lambda x: "" if pd.isna(x) else f"{x:.4f}"
+            )
+
+            # 1순위 배경 하이라이트 HTML 테이블
+            html_rows = ""
+            for i, row in top3_show.iterrows():
+                rank = row["추천순위"]
+                if rank == 1:
+                    style = ' style="background-color:#e8f4fd; font-weight:bold;"'
+                else:
+                    style = ""
+                html_rows += f"<tr{style}>"
+                for v in row:
+                    html_rows += f"<td>{v}</td>"
+                html_rows += "</tr>"
+
+            st.markdown(f"""
+            <table class="centered-table">
+            <thead><tr>
+                <th>추천순위</th><th>기간</th><th>추천연도</th><th>R²</th>
+            </tr></thead>
+            <tbody>{html_rows}</tbody>
+            </table>
+            """, unsafe_allow_html=True)
 
             # 그래프
             rec_plot = rec_df.sort_values("시작연도")
@@ -615,7 +644,7 @@ def main():
                 marker=dict(size=8),
             ))
             fig_r.update_layout(
-                title=f"학습 시작연도별 R² — {rec_product} (종료={rec_end_year})",
+                title=f"학습 시작연도별 R² — {rec_product} (실적연도={rec_end_year})",
                 xaxis_title="학습 시작연도", yaxis_title="R² (train fit)",
                 xaxis=dict(tickmode="linear", dtick=1),
                 margin=dict(t=60, b=60), hovermode="x unified",
@@ -626,7 +655,7 @@ def main():
             # ── (2) 기온 학습 기간 추천 ──
             st.markdown('<div class="sub">🌡️ 기온 학습 기간 추천 (과거 N년 평균기온 적용)</div>',
                         unsafe_allow_html=True)
-            st.caption(f"'{rec_end_year}년 실적'과 '과거 N년 평균기온으로 예측한 값'의 R² 비교")
+            st.caption(f"'{rec_end_year}년 실적'과 '과거 N년 평균기온으로 Poly-3 예측한 값'의 R² 비교")
 
             temp_rec = recommend_temp_period(merged, rec_product, temp_daily, end_year=rec_end_year)
             if not temp_rec.empty:
@@ -645,8 +674,8 @@ def main():
                 best_poly = rec_df.iloc[0]
                 st.success(
                     f"📌 **종합 추천**: "
-                    f"Poly-3 학습 기간 **{int(best_poly['시작연도'])}~{int(best_poly['종료연도'])}년** "
-                    f"(R²={best_poly['R2']:.4f})"
+                    f"Poly-3 학습 기간 **{best_poly['기간']}** "
+                    f"({best_poly['추천연도']}, R²={best_poly['R2']:.4f})"
                 )
 
     # ══════════════════════════════════════════
