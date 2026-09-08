@@ -635,8 +635,8 @@ def main():
         st.markdown("### 📋 메뉴")
         menu_options = [
             "🎯 학습 기간 추천",
-            "📈 공급량 예측",
             "🧊 판매량 예측 (냉방용)",
+            "📈 공급량 예측",
         ]
         selected_menu = st.radio(
             "분석 메뉴", options=menu_options,
@@ -734,11 +734,11 @@ def main():
                 marker=dict(size=9, line=dict(width=1.5, color="white")),
                 fill="tozeroy", fillcolor="rgba(44,95,138,0.07)",
             ))
+            fig_r.update_layout(**CHART_LAYOUT)
             fig_r.update_layout(
-                **CHART_LAYOUT,
                 title=f"학습 시작연도별 R² — {rec_product} (실적연도={rec_end_year})",
                 xaxis_title="학습 시작연도", yaxis_title="R² (예측 vs 실적)",
-                xaxis=dict(**CHART_LAYOUT.get("xaxis", {}), tickmode="linear", dtick=1),
+                xaxis_tickmode="linear", xaxis_dtick=1,
                 margin=dict(t=60, b=60),
             )
             st.plotly_chart(fig_r, use_container_width=True,
@@ -778,7 +778,7 @@ def main():
     # ══════════════════════════════════════════
     # 공급량 예측
     # ══════════════════════════════════════════
-    elif selected_menu == menu_options[1]:
+    elif selected_menu == menu_options[2]:
         st.markdown("### 📈 공급량 예측 (Poly-3)")
 
         # ── 설정 ──
@@ -921,11 +921,11 @@ def main():
                         hovertemplate="%{x} %{y:,.0f} MJ<br>기온 %{customdata:.1f}℃<extra></extra>",
                     ))
 
+                fig.update_layout(**CHART_LAYOUT)
                 fig.update_layout(
-                    **CHART_LAYOUT,
                     title=f"{prod} — Poly-3 예측 (Train R²={r2_train:.4f})",
                     xaxis_title="월", yaxis_title="공급량 (MJ)",
-                    yaxis=dict(**CHART_LAYOUT.get("yaxis", {}), rangemode="tozero"),
+                    yaxis_rangemode="tozero",
                     margin=dict(t=60, b=120), dragmode="pan",
                 )
                 st.plotly_chart(fig, use_container_width=True,
@@ -978,8 +978,8 @@ def main():
                         fill="toself", fillcolor="rgba(232,80,26,0.12)",
                         line=dict(width=0), name="95% 신뢰구간",
                     ))
+                    fig_sc.update_layout(**CHART_LAYOUT)
                     fig_sc.update_layout(
-                        **CHART_LAYOUT,
                         title=f"{prod} — 기온 vs 공급량 (R²={r2_train:.4f})",
                         xaxis_title="기온 (℃)", yaxis_title="공급량 (MJ)",
                         margin=dict(t=60, b=60),
@@ -1005,7 +1005,7 @@ def main():
     # ══════════════════════════════════════════
     # 판매량 예측 (냉방용)
     # ══════════════════════════════════════════
-    elif selected_menu == menu_options[2]:
+    elif selected_menu == menu_options[1]:
         st.markdown("### 🧊 판매량 예측 (냉방용)")
         st.markdown("""
         <div class="info-box">
@@ -1182,11 +1182,11 @@ def main():
                 hovertemplate="%{x} %{y:,.0f}<br>검침기온 %{customdata:.1f}℃<extra></extra>",
             ))
 
+            fig_cool.update_layout(**CHART_LAYOUT)
             fig_cool.update_layout(
-                **CHART_LAYOUT,
                 title=f"{cooling_col} 판매량 — 실적 vs 예측 (R²={r2_s:.4f})",
                 xaxis_title="월", yaxis_title="판매량",
-                yaxis=dict(**CHART_LAYOUT.get("yaxis", {}), rangemode="tozero"),
+                yaxis_rangemode="tozero",
                 margin=dict(t=60, b=120), dragmode="pan",
             )
             st.plotly_chart(fig_cool, use_container_width=True,
@@ -1206,8 +1206,8 @@ def main():
                     x=xx_s, y=yy_s, mode="lines",
                     name="Poly-3 회귀", line=dict(color="#e8501a", width=2.5),
                 ))
+                fig_sc_s.update_layout(**CHART_LAYOUT)
                 fig_sc_s.update_layout(
-                    **CHART_LAYOUT,
                     title=f"{cooling_col} — 검침기온 vs 판매량 (R²={r2_s:.4f})",
                     xaxis_title="검침기온 (℃)", yaxis_title="판매량",
                     margin=dict(t=60, b=60),
