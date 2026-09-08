@@ -477,6 +477,42 @@ def render_centered_table(df, float_cols=None, int_cols=None, pct_cols=None, ind
     )
 
 
+def _render_highlight_table(df, headers=None, pct_cols=None):
+    """
+    1순위 배경 하이라이트가 적용된 HTML 테이블.
+    headers: 표시할 헤더명 리스트 (None이면 df.columns 사용)
+    pct_cols: 소수점 4자리로 포맷할 컬럼명 리스트
+    """
+    pct_cols = pct_cols or []
+    cols = list(df.columns)
+    if headers is None:
+        headers = cols
+
+    html_rows = ""
+    for _, row in df.iterrows():
+        rank = row.iloc[0]  # 첫 번째 컬럼이 추천순위
+        if rank == 1:
+            style = ' style="background-color:#e8f4fd; font-weight:bold;"'
+        else:
+            style = ""
+        html_rows += f"<tr{style}>"
+        for c in cols:
+            v = row[c]
+            if c in pct_cols:
+                v = "" if pd.isna(v) else f"{float(v):.4f}"
+            html_rows += f"<td>{v}</td>"
+        html_rows += "</tr>"
+
+    header_html = "".join(f"<th>{h}</th>" for h in headers)
+
+    st.markdown(f"""
+    <table class="centered-table">
+    <thead><tr>{header_html}</tr></thead>
+    <tbody>{html_rows}</tbody>
+    </table>
+    """, unsafe_allow_html=True)
+
+
 # ══════════════════════════════════════════════
 # 메인
 # ══════════════════════════════════════════════
@@ -586,42 +622,22 @@ def main():
                         unsafe_allow_html=True)
 
             rec_df = recommend_train_ranges(merged, rec_product, end_year=rec_end_year)
-            top3 = rec_df.head(3).copy()
-            top3.insert(0, "추천순위", range(1, len(top3) + 1))
+            rec_all = rec_df.copy()
+            rec_all.insert(0, "추천순위", range(1, len(rec_all) + 1))
 
-            # 시작연도/종료연도 삭제, 기간+추천연도+R2만 표시
-            top3_show = top3[["추천순위", "기간", "추천연도", "R2"]].copy()
-            top3_show["R2"] = top3_show["R2"].map(
-                lambda x: "" if pd.isna(x) else f"{x:.4f}"
+            # 전체 순위 표시 (시작연도/종료연도 삭제)
+            _render_highlight_table(
+                rec_all[["추천순위", "기간", "추천연도", "R2"]],
+                headers=["추천순위", "기간", "추천연도", "R²"],
+                pct_cols=["R2"],
             )
-
-            # 1순위 배경 하이라이트 HTML 테이블
-            html_rows = ""
-            for i, row in top3_show.iterrows():
-                rank = row["추천순위"]
-                if rank == 1:
-                    style = ' style="background-color:#e8f4fd; font-weight:bold;"'
-                else:
-                    style = ""
-                html_rows += f"<tr{style}>"
-                for v in row:
-                    html_rows += f"<td>{v}</td>"
-                html_rows += "</tr>"
-
-            st.markdown(f"""
-            <table class="centered-table">
-            <thead><tr>
-                <th>추천순위</th><th>기간</th><th>추천연도</th><th>R²</th>
-            </tr></thead>
-            <tbody>{html_rows}</tbody>
-            </table>
-            """, unsafe_allow_html=True)
 
             # 그래프
             rec_plot = rec_df.sort_values("시작연도")
             fig_r = go.Figure()
 
-            # 추천 구간 하이라이트
+            # 추천 구간 하이라이트 (상위 3개)
+            top3 = rec_all.head(3)
             palette = ["rgba(255,179,71,0.2)", "rgba(118,214,165,0.2)", "rgba(120,180,255,0.2)"]
             for i, (_, row) in enumerate(top3.iterrows()):
                 if i >= 3:
@@ -662,7 +678,12 @@ def main():
                 temp_rec_show = temp_rec[["기온기간", "R2_예측"]].copy()
                 temp_rec_show = temp_rec_show.sort_values("R2_예측", ascending=False, na_position="last")
                 temp_rec_show.insert(0, "추천순위", range(1, len(temp_rec_show) + 1))
-                render_centered_table(temp_rec_show, pct_cols=["R2_예측"])
+
+                _render_highlight_table(
+                    temp_rec_show,
+                    headers=["추천순위", "기온기간", "R²"],
+                    pct_cols=["R2_예측"],
+                )
 
                 best_temp = temp_rec_show.iloc[0]
                 st.info(f"🏆 **추천 기온 기간**: {best_temp['기온기간']} (R²={best_temp['R2_예측']:.4f})")
