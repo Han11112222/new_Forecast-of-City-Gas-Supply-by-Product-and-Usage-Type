@@ -349,49 +349,93 @@ def poly_eq_text(model):
     return f"y = {c3:+,.4f}x³ {c2:+,.4f}x² {c1:+,.4f}x {d:+,.4f}"
 
 
-def r2_for_period(merged_df, product, start_year, end_year):
-    """특정 학습 기간의 R² 계산"""
-    sub = merged_df[
-        (merged_df["연"] >= start_year) & (merged_df["연"] <= end_year)
-    ][["월평균기온", product]].dropna()
-    if len(sub) < 12:
-        return np.nan
-    x = sub["월평균기온"].values.astype(float)
-    y = sub[product].values.astype(float)
-    _, r2, _, _ = fit_poly3(x, y, x)
-    return float(r2)
-
-
 def recommend_train_ranges(merged_df, product, end_year=None):
     """
-    시작연도를 바꿔가며 (start~end) R² 계산 → 추천 학습 기간.
-    반환: DataFrame(columns=[시작연도, 종료연도, 기간, 추천연도, R2])
+    [1번째 박스] Poly-3 학습 기간 추천
+    - 기온: 실적연도(end_year)의 실제 월별 기온 고정
+    - 변수: Poly-3 학습 기간(시작연도)만 변경
+    - R²: 학습된 모델로 실적연도 공급량 예측 vs 실적연도 실제 공급량
     """
     if end_year is None:
         end_year = int(merged_df["연"].max())
     min_year = int(merged_df["연"].min())
+
+    # 실적연도 데이터 (실제 기온 + 실제 공급량)
+    actual = merged_df[merged_df["연"] == end_year][["월", "월평균기온", product]].dropna()
+    if actual.empty or len(actual) < 3:
+        return pd.DataFrame()
+
+    x_actual = actual["월평균기온"].values.astype(float)   # 실적연도 실제 기온 (고정)
+    y_actual = actual[product].values.astype(float)         # 실적연도 실제 공급량
+
     rows = []
     for sy in range(min_year, end_year):
-        n_years = end_year - sy + 1
-        r2 = r2_for_period(merged_df, product, sy, end_year)
+        n_years = end_year - sy
+        # 학습 데이터: sy ~ end_year-1 (실적연도 제외)
+        train = merged_df[
+            (merged_df["연"] >= sy) & (merged_df["연"] < end_year)
+        ][["월평균기온", product]].dropna()
+
+        if len(train) < 12:
+            rows.append({
+                "시작연도": sy, "종료연도": end_year - 1,
+                "기간": f"{sy}~{end_year - 1}",
+                "추천연도": f"최근 {n_years}년",
+                "R2": np.nan,
+            })
+            continue
+
+        x_tr = train["월평균기온"].values.astype(float)
+        y_tr = train[product].values.astype(float)
+
+        # 학습 후 실적연도 실제 기온으로 예측
+        y_pred, _, _, _ = fit_poly3(x_tr, y_tr, x_actual)
+
+        # R²: 예측 vs 실적
+        ss_res = np.sum((y_actual - y_pred) ** 2)
+        ss_tot = np.sum((y_actual - np.mean(y_actual)) ** 2)
+        r2 = 1 - ss_res / ss_tot if ss_tot > 0 else np.nan
+
         rows.append({
-            "시작연도": sy, "종료연도": end_year,
-            "기간": f"{sy}~{end_year}",
+            "시작연도": sy, "종료연도": end_year - 1,
+            "기간": f"{sy}~{end_year - 1}",
             "추천연도": f"최근 {n_years}년",
-            "R2": r2,
+            "R2": float(r2) if not np.isnan(r2) else np.nan,
         })
+
     df = pd.DataFrame(rows)
     df = df.sort_values("R2", ascending=False, na_position="last").reset_index(drop=True)
     return df
 
 
-def recommend_temp_period(merged_df, product, temp_daily, end_year=None):
+def recommend_temp_period(merged_df, product, temp_daily, end_year=None,
+                          fixed_train_years=3):
     """
-    과거 N년(1,2,3,5년) 평균기온을 예측 입력으로 사용했을 때
-    실적과 가장 유사한 R² 산출 → 기온 학습 기간 추천.
+    [2번째 박스] 기온 학습 기간 추천
+    - Poly-3: 최근 fixed_train_years년 학습 고정
+    - 변수: 예측 기온만 과거 N년(1/2/3/5년) 월별 평균으로 변경
+    - R²: 해당 평균기온으로 예측한 공급량 vs 실적연도 실제 공급량
     """
     if end_year is None:
         end_year = int(merged_df["연"].max())
+
+    # Poly-3 학습 데이터: 최근 fixed_train_years년 고정
+    train_start = end_year - fixed_train_years
+    train = merged_df[
+        (merged_df["연"] >= train_start) & (merged_df["연"] < end_year)
+    ][["월평균기온", product]].dropna()
+
+    if len(train) < 12:
+        return pd.DataFrame()
+
+    x_tr = train["월평균기온"].values.astype(float)
+    y_tr = train[product].values.astype(float)
+
+    # 실적연도 실제 공급량
+    actual = merged_df[merged_df["연"] == end_year][["월", product]].dropna()
+    if actual.empty or len(actual) < 3:
+        return pd.DataFrame()
+    y_actual = actual[product].values.astype(float)
 
     # 월별 평균기온: 연도별로 집계
     temp_by_ym = (
@@ -403,45 +447,35 @@ def recommend_temp_period(merged_df, product, temp_daily, end_year=None):
     results = []
 
     for n_years in periods:
-        # 과거 n_years년 평균 기온으로 end_year 기온 추정
         past_years = list(range(end_year - n_years, end_year))
+        period_str = f"{min(past_years)}~{max(past_years)}" if len(past_years) > 1 else str(past_years[0])
+        rec_label = f"과거 {n_years}년평균"
+
         past_temps = temp_by_ym[temp_by_ym["연"].isin(past_years)]
         if past_temps.empty:
-            results.append({"기온기간": f"과거{n_years}년평균", "N년": n_years, "R2_예측": np.nan})
+            results.append({"기간": period_str, "추천연도": rec_label, "R2": np.nan})
             continue
 
         avg_by_month = past_temps.groupby("월")["평균기온"].mean().reset_index()
         avg_by_month.rename(columns={"평균기온": "예측기온"}, inplace=True)
 
-        # end_year 실적과 비교
-        actual = merged_df[merged_df["연"] == end_year][["월", product]].dropna()
-        if actual.empty:
-            results.append({"기온기간": f"과거{n_years}년평균", "N년": n_years, "R2_예측": np.nan})
+        # 실적연도와 같은 월만 매칭
+        compare = actual[["월"]].merge(avg_by_month, on="월", how="inner")
+        if len(compare) < 3 or len(compare) != len(y_actual):
+            results.append({"기간": period_str, "추천연도": rec_label, "R2": np.nan})
             continue
 
-        compare = actual.merge(avg_by_month, on="월", how="inner")
-        if len(compare) < 3:
-            results.append({"기온기간": f"과거{n_years}년평균", "N년": n_years, "R2_예측": np.nan})
-            continue
-
-        # 전체 학습 데이터로 모델 학습 후, 과거 N년 평균기온으로 예측
-        train = merged_df[merged_df["연"] < end_year][["월평균기온", product]].dropna()
-        if len(train) < 12:
-            results.append({"기온기간": f"과거{n_years}년평균", "N년": n_years, "R2_예측": np.nan})
-            continue
-
-        x_tr = train["월평균기온"].values.astype(float)
-        y_tr = train[product].values.astype(float)
         x_pred = compare["예측기온"].values.astype(float)
-        y_actual = compare[product].values.astype(float)
 
+        # Poly-3 예측 (고정된 모델 + 변경된 기온)
         y_pred, _, _, _ = fit_poly3(x_tr, y_tr, x_pred)
-        # R² 계산 (예측 vs 실적)
+
+        # R²: 예측 공급량 vs 실적 공급량
         ss_res = np.sum((y_actual - y_pred) ** 2)
         ss_tot = np.sum((y_actual - np.mean(y_actual)) ** 2)
-        r2_pred = 1 - ss_res / ss_tot if ss_tot > 0 else np.nan
+        r2 = 1 - ss_res / ss_tot if ss_tot > 0 else np.nan
 
-        results.append({"기온기간": f"과거{n_years}년평균", "N년": n_years, "R2_예측": float(r2_pred)})
+        results.append({"기간": period_str, "추천연도": rec_label, "R2": float(r2)})
 
     return pd.DataFrame(results)
 
@@ -597,8 +631,8 @@ def main():
         st.markdown("### 🎯 학습 기간 추천")
         st.markdown("""
         <div class="info-box">
-        <b>Poly-3 학습 기간</b>: 시작연도를 바꿔가며 R²를 비교 → 최적 학습 구간 추천<br>
-        <b>기온 학습 기간</b>: 과거 1/2/3/5년 평균기온으로 예측 시 실적 유사도(R²) 비교
+        <b>Poly-3 학습 기간</b>: 기온 고정(실적연도 실제 기온) · Poly-3 학습 기간만 변경 → 예측 vs 실적 R²<br>
+        <b>기온 학습 기간</b>: Poly-3 고정(최근 3년 학습) · 기온만 과거 N년 평균으로 변경 → 예측 vs 실적 R²
         </div>
         """, unsafe_allow_html=True)
 
@@ -618,8 +652,9 @@ def main():
 
         if st.button("🔎 추천 구간 계산", type="primary", key="btn_rec"):
             # ── (1) Poly-3 학습 기간 추천 ──
-            st.markdown('<div class="sub">📊 Poly-3 학습 기간 추천 (시작연도별 R²)</div>',
+            st.markdown('<div class="sub">📊 Poly-3 학습 기간 추천</div>',
                         unsafe_allow_html=True)
+            st.caption(f"기온 고정: {rec_end_year}년 실제 월별 기온 사용 · Poly-3 학습 기간만 변경")
 
             rec_df = recommend_train_ranges(merged, rec_product, end_year=rec_end_year)
             rec_all = rec_df.copy()
@@ -661,7 +696,7 @@ def main():
             ))
             fig_r.update_layout(
                 title=f"학습 시작연도별 R² — {rec_product} (실적연도={rec_end_year})",
-                xaxis_title="학습 시작연도", yaxis_title="R² (train fit)",
+                xaxis_title="학습 시작연도", yaxis_title="R² (예측 vs 실적)",
                 xaxis=dict(tickmode="linear", dtick=1),
                 margin=dict(t=60, b=60), hovermode="x unified",
             )
@@ -669,24 +704,24 @@ def main():
                             config=dict(scrollZoom=True, displaylogo=False))
 
             # ── (2) 기온 학습 기간 추천 ──
-            st.markdown('<div class="sub">🌡️ 기온 학습 기간 추천 (과거 N년 평균기온 적용)</div>',
+            st.markdown('<div class="sub">🌡️ 기온 학습 기간 추천</div>',
                         unsafe_allow_html=True)
-            st.caption(f"'{rec_end_year}년 실적'과 '과거 N년 평균기온으로 Poly-3 예측한 값'의 R² 비교")
+            st.caption(f"Poly-3 고정: 최근 3년 학습 · 기온만 과거 N년 월별 평균으로 변경하여 {rec_end_year}년 실적과 비교")
 
             temp_rec = recommend_temp_period(merged, rec_product, temp_daily, end_year=rec_end_year)
             if not temp_rec.empty:
-                temp_rec_show = temp_rec[["기온기간", "R2_예측"]].copy()
-                temp_rec_show = temp_rec_show.sort_values("R2_예측", ascending=False, na_position="last")
+                temp_rec_show = temp_rec[["기간", "추천연도", "R2"]].copy()
+                temp_rec_show = temp_rec_show.sort_values("R2", ascending=False, na_position="last")
                 temp_rec_show.insert(0, "추천순위", range(1, len(temp_rec_show) + 1))
 
                 _render_highlight_table(
                     temp_rec_show,
-                    headers=["추천순위", "기온기간", "R²"],
-                    pct_cols=["R2_예측"],
+                    headers=["추천순위", "기간", "추천연도", "R²"],
+                    pct_cols=["R2"],
                 )
 
                 best_temp = temp_rec_show.iloc[0]
-                st.info(f"🏆 **추천 기온 기간**: {best_temp['기온기간']} (R²={best_temp['R2_예측']:.4f})")
+                st.info(f"🏆 **추천 기온 기간**: {best_temp['추천연도']} ({best_temp['기간']}, R²={best_temp['R2']:.4f})")
             else:
                 st.warning("기온 학습 기간 추천 계산에 필요한 데이터가 부족합니다.")
 
