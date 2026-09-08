@@ -1,4 +1,4 @@
-# app.py — 도시가스 공급·판매량 예측 시스템
+# app.py — 도시가스 공급량·판매량 예측
 # Tab 1: 학습 기간 추천 (기온 학습 기간 + Poly-3 학습 기간)
 # Tab 2: 공급량 예측 (Poly-3 + Normal/Best/Conservative)
 # Tab 3: 판매량 예측 (냉방용, 전월16~당월15 평균기온 기준)
@@ -12,7 +12,7 @@ import plotly.graph_objects as go
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import LinearRegression
 
-st.set_page_config(page_title="도시가스 공급·판매량 예측", page_icon="📊", layout="wide")
+st.set_page_config(page_title="도시가스 공급량·판매량 예측", page_icon="📊", layout="wide")
 
 # ══════════════════════════════════════════════
 # 상수
@@ -582,7 +582,7 @@ def _render_highlight_table(df, headers=None, pct_cols=None):
 # ══════════════════════════════════════════════
 
 def main():
-    st.title("📊 도시가스 공급·판매량 예측 시스템")
+    st.title("📊 도시가스 공급량·판매량 예측")
     st.caption("대성에너지(주) 마케팅본부 · Poly-3 기온↔공급량/판매량 회귀 모델")
 
     # ── 데이터 로드 (백그라운드) ──
@@ -610,9 +610,9 @@ def main():
         # 메뉴 (최상단)
         st.markdown("### 📋 메뉴")
         menu_options = [
-            "🎯 학습 기간 추천",
-            "🧊 판매량 예측 (냉방용)",
+            "🎯 학습 데이터 기간 추천",
             "📈 공급량 예측",
+            "🧊 판매량 예측 (냉방용)",
         ]
         selected_menu = st.radio(
             "분석 메뉴", options=menu_options,
@@ -699,49 +699,108 @@ def main():
                 pct_cols=["R2"],
             )
 
-            # 그래프
+            # ── R² 그래프 (세련된 디자인) ──
             rec_plot = rec_df.sort_values("시작연도")
             fig_r = go.Figure()
 
-            # 추천 구간 하이라이트 (상위 3개)
+            # 추천 1~3위 구간 하이라이트 (세로 띠 + 범례)
             top3 = rec_all.head(3)
-            palette = ["rgba(255,179,71,0.2)", "rgba(118,214,165,0.2)", "rgba(120,180,255,0.2)"]
+            # 1위=블루, 2위=틸, 3위=라벤더 (세련된 파스텔톤)
+            highlight_colors = [
+                ("rgba(59,130,246,0.12)", "rgba(59,130,246,0.5)"),
+                ("rgba(16,185,129,0.10)", "rgba(16,185,129,0.45)"),
+                ("rgba(139,92,246,0.08)", "rgba(139,92,246,0.4)"),
+            ]
+            rank_labels = ["1위 추천", "2위 추천", "3위 추천"]
             for i, (_, row) in enumerate(top3.iterrows()):
                 if i >= 3:
                     break
+                fill_c, border_c = highlight_colors[i]
+                sy = int(row["시작연도"])
+                ey = int(row["종료연도"])
                 fig_r.add_shape(
                     type="rect", xref="x", yref="paper",
-                    x0=int(row["시작연도"]) - 0.5, x1=int(row["종료연도"]) + 0.5,
+                    x0=sy - 0.4, x1=ey + 0.4,
                     y0=0, y1=1,
-                    line=dict(width=0), fillcolor=palette[i % len(palette)],
+                    line=dict(width=1.5, color=border_c, dash="dot"),
+                    fillcolor=fill_c, layer="below",
                 )
+                # 범례용 트레이스 (구간 색상 설명)
+                fig_r.add_trace(go.Scatter(
+                    x=[None], y=[None], mode="markers",
+                    marker=dict(size=10, color=fill_c,
+                                line=dict(width=1.5, color=border_c),
+                                symbol="square"),
+                    name=f"{rank_labels[i]} ({row['추천연도']})",
+                    showlegend=True,
+                ))
 
-            # Y축 범위를 데이터에 맞게 조정 (직선처럼 보이지 않도록)
+            # Y축: 데이터가 세로 공간의 70%를 차지하도록 계산
             r2_vals = rec_plot["R2"].dropna().values
-            y_min = max(0, float(r2_vals.min()) - 0.01)
-            y_max = min(1.0, float(r2_vals.max()) + 0.005)
-            if y_max - y_min < 0.02:
-                y_min = max(0, y_max - 0.03)
+            data_min = float(r2_vals.min())
+            data_max = float(r2_vals.max())
+            data_range = max(data_max - data_min, 0.0005)
+            chart_range = data_range / 0.70
+            padding = (chart_range - data_range) / 2
+            y_min = data_min - padding
+            y_max = data_max + padding
+            if y_min < 0:
+                y_min = 0
+            if y_max > 1.0:
+                y_max = 1.0
 
+            # 최고점(1위) 강조
+            best_idx = rec_plot["R2"].idxmax()
+            best_x = rec_plot.loc[best_idx, "시작연도"]
+            best_y = rec_plot.loc[best_idx, "R2"]
+
+            # 메인 라인
             fig_r.add_trace(go.Scatter(
                 x=rec_plot["시작연도"], y=rec_plot["R2"],
                 mode="lines+markers+text",
                 text=[f"{v:.4f}" if pd.notna(v) else "" for v in rec_plot["R2"]],
                 textposition="top center",
+                textfont=dict(size=11, color="#374151"),
                 name="R² (Poly-3)",
-                hovertemplate="시작연도=%{x}<br>R²=%{y:.4f}<extra></extra>",
-                line=dict(color="#2c5f8a", width=2.5, shape="spline"),
-                marker=dict(size=9, color="#2c5f8a",
-                            line=dict(width=1.5, color="white")),
+                hovertemplate="시작연도=%{x}<br>R²=%{y:.6f}<extra></extra>",
+                line=dict(color="#2563eb", width=2.5, shape="spline"),
+                marker=dict(size=9, color="#2563eb",
+                            line=dict(width=2, color="white")),
             ))
+            # 라인 아래 면적 (은은한 그라데이션)
+            fig_r.add_trace(go.Scatter(
+                x=rec_plot["시작연도"], y=rec_plot["R2"],
+                mode="lines", showlegend=False,
+                line=dict(width=0),
+                fill="tozeroy", fillcolor="rgba(37,99,235,0.06)",
+            ))
+            # 최적점 별 마커
+            fig_r.add_trace(go.Scatter(
+                x=[best_x], y=[best_y], mode="markers",
+                marker=dict(size=14, color="#f59e0b",
+                            line=dict(width=2.5, color="white"),
+                            symbol="star"),
+                name=f"최적 (R²={best_y:.4f})",
+                hovertemplate=f"최적 시작연도={best_x}<br>R²={best_y:.6f}<extra></extra>",
+            ))
+
             fig_r.update_layout(**CHART_LAYOUT)
             fig_r.update_layout(
-                title=f"학습 시작연도별 R² — {rec_product} (실적연도={rec_end_year})",
+                title=dict(text=f"학습 시작연도별 R² — {rec_product} (실적연도={rec_end_year})",
+                           font=dict(size=15, color="#1f2937")),
                 xaxis_title="학습 시작연도", yaxis_title="R² (예측 vs 실적)",
                 xaxis_tickmode="linear", xaxis_dtick=1,
                 yaxis_range=[y_min, y_max],
                 yaxis_tickformat=".4f",
-                margin=dict(t=60, b=60),
+                margin=dict(t=60, b=80),
+                legend=dict(
+                    orientation="h", yanchor="bottom", y=-0.25,
+                    xanchor="center", x=0.5,
+                    bgcolor="rgba(255,255,255,0.9)",
+                    bordercolor="rgba(0,0,0,0.08)", borderwidth=1,
+                    font=dict(size=10),
+                ),
+                height=480,
             )
             st.plotly_chart(fig_r, use_container_width=True,
                             config=dict(scrollZoom=True, displaylogo=False))
@@ -780,7 +839,7 @@ def main():
     # ══════════════════════════════════════════
     # 공급량 예측
     # ══════════════════════════════════════════
-    elif selected_menu == menu_options[2]:
+    elif selected_menu == menu_options[1]:
         st.markdown("### 📈 공급량 예측 (Poly-3)")
 
         # ── 설정 ──
@@ -1007,7 +1066,7 @@ def main():
     # ══════════════════════════════════════════
     # 판매량 예측 (냉방용)
     # ══════════════════════════════════════════
-    elif selected_menu == menu_options[1]:
+    elif selected_menu == menu_options[2]:
         st.markdown("### 🧊 판매량 예측 (냉방용)")
         st.markdown("""
         <div class="info-box">
