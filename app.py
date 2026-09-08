@@ -58,8 +58,38 @@ h1 { color: #1a3c5e; border-bottom: 3px solid #e8501a; padding-bottom: 0.3rem; }
 }
 table.centered-table { width:100%; table-layout:fixed; }
 table.centered-table th, table.centered-table td { text-align:center !important; }
+/* 사이드바 메뉴 스타일 */
+section[data-testid="stSidebar"] .stRadio > label { font-weight: 600; }
+section[data-testid="stSidebar"] .stRadio > div { gap: 0.2rem; }
 </style>
 """, unsafe_allow_html=True)
+
+
+# ── 공통 그래프 레이아웃 ──
+CHART_LAYOUT = dict(
+    font=dict(family="Pretendard, -apple-system, sans-serif", size=13),
+    plot_bgcolor="rgba(0,0,0,0)",
+    paper_bgcolor="rgba(0,0,0,0)",
+    margin=dict(t=50, b=50, l=60, r=30),
+    hovermode="x unified",
+    legend=dict(
+        orientation="h", yanchor="bottom", y=-0.18,
+        xanchor="center", x=0.5,
+        bgcolor="rgba(255,255,255,0.8)",
+        bordercolor="rgba(0,0,0,0.1)", borderwidth=1,
+        font=dict(size=11),
+    ),
+    xaxis=dict(
+        showgrid=False, showline=True,
+        linecolor="rgba(0,0,0,0.15)", linewidth=1,
+        tickfont=dict(size=12),
+    ),
+    yaxis=dict(
+        showgrid=True, gridcolor="rgba(0,0,0,0.06)", gridwidth=1,
+        showline=False, zeroline=False,
+        tickfont=dict(size=12),
+    ),
+)
 
 # ══════════════════════════════════════════════
 # 데이터 로드 함수
@@ -600,6 +630,20 @@ def main():
         st.markdown(f"**데이터 기간**: {min(years_all)}~{max(years_all)}년")
         st.markdown(f"**월 데이터**: {len(merged)}건")
 
+        # ── 메뉴 ──
+        st.markdown("---")
+        st.markdown("### 📋 메뉴")
+        menu_options = [
+            "🎯 학습 기간 추천",
+            "📈 공급량 예측",
+            "🧊 판매량 예측 (냉방용)",
+        ]
+        selected_menu = st.radio(
+            "분석 메뉴", options=menu_options,
+            index=0, label_visibility="collapsed",
+            key="main_menu",
+        )
+
         # ── 예상기온 엑셀 업로드 ──
         st.markdown("---")
         st.markdown("### 🌡️ 예상기온 업로드")
@@ -616,18 +660,13 @@ def main():
                 st.success(f"✅ 예상기온 {len(forecast_temp_df)}개월 로드")
 
     # ══════════════════════════════════════════
-    # 탭
+    # 메뉴별 화면
     # ══════════════════════════════════════════
-    tab1, tab2, tab3 = st.tabs([
-        "🎯 학습 기간 추천",
-        "📈 공급량 예측",
-        "🧊 판매량 예측 (냉방용)",
-    ])
 
     # ══════════════════════════════════════════
-    # TAB 1: 학습 기간 추천
+    # 학습 기간 추천
     # ══════════════════════════════════════════
-    with tab1:
+    if selected_menu == menu_options[0]:
         st.markdown("### 🎯 학습 기간 추천")
         st.markdown("""
         <div class="info-box">
@@ -691,14 +730,16 @@ def main():
                 textposition="top center",
                 name="R² (Poly-3)",
                 hovertemplate="시작연도=%{x}<br>R²=%{y:.4f}<extra></extra>",
-                line=dict(color="#2c5f8a", width=2),
-                marker=dict(size=8),
+                line=dict(color="#2c5f8a", width=2.5),
+                marker=dict(size=9, line=dict(width=1.5, color="white")),
+                fill="tozeroy", fillcolor="rgba(44,95,138,0.07)",
             ))
             fig_r.update_layout(
+                **CHART_LAYOUT,
                 title=f"학습 시작연도별 R² — {rec_product} (실적연도={rec_end_year})",
                 xaxis_title="학습 시작연도", yaxis_title="R² (예측 vs 실적)",
-                xaxis=dict(tickmode="linear", dtick=1),
-                margin=dict(t=60, b=60), hovermode="x unified",
+                xaxis=dict(**CHART_LAYOUT.get("xaxis", {}), tickmode="linear", dtick=1),
+                margin=dict(t=60, b=60),
             )
             st.plotly_chart(fig_r, use_container_width=True,
                             config=dict(scrollZoom=True, displaylogo=False))
@@ -735,9 +776,9 @@ def main():
                 )
 
     # ══════════════════════════════════════════
-    # TAB 2: 공급량 예측
+    # 공급량 예측
     # ══════════════════════════════════════════
-    with tab2:
+    elif selected_menu == menu_options[1]:
         st.markdown("### 📈 공급량 예측 (Poly-3)")
 
         # ── 설정 ──
@@ -881,10 +922,10 @@ def main():
                     ))
 
                 fig.update_layout(
+                    **CHART_LAYOUT,
                     title=f"{prod} — Poly-3 예측 (Train R²={r2_train:.4f})",
                     xaxis_title="월", yaxis_title="공급량 (MJ)",
-                    yaxis=dict(rangemode="tozero"),
-                    legend=dict(orientation="h", yanchor="bottom", y=-0.2),
+                    yaxis=dict(**CHART_LAYOUT.get("yaxis", {}), rangemode="tozero"),
                     margin=dict(t=60, b=120), dragmode="pan",
                 )
                 st.plotly_chart(fig, use_container_width=True,
@@ -938,6 +979,7 @@ def main():
                         line=dict(width=0), name="95% 신뢰구간",
                     ))
                     fig_sc.update_layout(
+                        **CHART_LAYOUT,
                         title=f"{prod} — 기온 vs 공급량 (R²={r2_train:.4f})",
                         xaxis_title="기온 (℃)", yaxis_title="공급량 (MJ)",
                         margin=dict(t=60, b=60),
@@ -961,9 +1003,9 @@ def main():
             )
 
     # ══════════════════════════════════════════
-    # TAB 3: 판매량 예측 (냉방용)
+    # 판매량 예측 (냉방용)
     # ══════════════════════════════════════════
-    with tab3:
+    elif selected_menu == menu_options[2]:
         st.markdown("### 🧊 판매량 예측 (냉방용)")
         st.markdown("""
         <div class="info-box">
@@ -1141,10 +1183,10 @@ def main():
             ))
 
             fig_cool.update_layout(
+                **CHART_LAYOUT,
                 title=f"{cooling_col} 판매량 — 실적 vs 예측 (R²={r2_s:.4f})",
                 xaxis_title="월", yaxis_title="판매량",
-                yaxis=dict(rangemode="tozero"),
-                legend=dict(orientation="h", yanchor="bottom", y=-0.2),
+                yaxis=dict(**CHART_LAYOUT.get("yaxis", {}), rangemode="tozero"),
                 margin=dict(t=60, b=120), dragmode="pan",
             )
             st.plotly_chart(fig_cool, use_container_width=True,
@@ -1165,6 +1207,7 @@ def main():
                     name="Poly-3 회귀", line=dict(color="#e8501a", width=2.5),
                 ))
                 fig_sc_s.update_layout(
+                    **CHART_LAYOUT,
                     title=f"{cooling_col} — 검침기온 vs 판매량 (R²={r2_s:.4f})",
                     xaxis_title="검침기온 (℃)", yaxis_title="판매량",
                     margin=dict(t=60, b=60),
