@@ -1,7 +1,7 @@
 # app.py — 도시가스 공급량·판매량 예측
 # Tab 1: 학습 기간 추천 (기온 학습 기간 + Poly-3 학습 기간)
 # Tab 2: 공급량 예측 (Poly-3 + Normal/Best/Conservative)
-# Tab 3: 냉난방공조용 예측 (GHP — 공급량/판매량 기반 + 기온방식 비교)
+# Tab 3: 판매량 예측 (냉방용) — 동절기/하절기 분리 모델(Ver1/Ver2/Ver3) + 계획 비교
 # ──────────────────────────────────────────────
 import streamlit as st
 import pandas as pd
@@ -11,6 +11,8 @@ from io import StringIO, BytesIO
 import plotly.graph_objects as go
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import LinearRegression
+from sklearn.pipeline import make_pipeline
+from sklearn.metrics import r2_score
 
 st.set_page_config(page_title="도시가스 공급량·판매량 예측", page_icon="📊", layout="wide")
 
@@ -522,6 +524,828 @@ def _make_line_chart(traces_data, title, xlab, ylab, height=420):
 
 
 # ══════════════════════════════════════════════
+# 냉방용 사용량 분석 심화ver — Tab 3 전용 (동절기/하절기 분리 모델, 판매량 계획 비교)
+# ══════════════════════════════════════════════
+
+LINE_COLORS = {
+    '실제_공급량합계':     "#1f4e9c",
+    '방법1_예측(정밀)':    "#2ecc71",
+    '방법2_예측(단순)':    "#f39c12",
+    '판매량_실적':       "#dc2626",
+    '예측_판매량_v1':         "#66b2ff",
+    '예측_판매량_v2':      "#f39c12",
+    '예측_판매량_v3':      "#8e44ad",
+    '판매량_계획':         "#f1948a",
+    '검침기온':           "#059669",
+}
+
+SERIES_LABELS = {
+    '판매량_실적':  '실적',
+    '예측_판매량_v1':    '기존 단일 3차식',
+    '예측_판매량_v2': '분리·3차식(참고)',
+    '예측_판매량_v3': '분리·2차식',
+    '판매량_계획':    '판매량 계획',
+}
+
+
+
+def render_line_chart(df, x_col, y_cols, height=420, title=None,
+                      secondary_col=None, secondary_name=None, secondary_suffix="℃"):
+    """
+    범례를 클릭하면 해당 라인을 껐다 켰다 할 수 있는 인터랙티브 라인차트.
+    df: x_col을 포함한 DataFrame (set_index 하지 않은 상태로 전달)
+    y_cols: 그릴 컬럼 이름 리스트 (df에 없는 컬럼은 자동으로 건너뜀)
+    secondary_col: 우측 보조축(예: 기온)에 점선으로 추가할 컬럼 (선택)
+    """
+    fig = go.Figure()
+    for col in y_cols:
+        if col not in df.columns:
+            continue
+        fig.add_trace(go.Scatter(
+            x=df[x_col], y=df[col], mode="lines+markers", name=col,
+            line=dict(color=LINE_COLORS.get(col), width=2.2),
+            marker=dict(size=5),
+        ))
+    has_secondary = secondary_col is not None and secondary_col in df.columns
+    if has_secondary:
+        fig.add_trace(go.Scatter(
+            x=df[x_col], y=df[secondary_col], mode="lines+markers",
+            name=secondary_name or secondary_col,
+            line=dict(color=LINE_COLORS.get(secondary_col, "#059669"), width=2, dash="dot"),
+            marker=dict(size=5, symbol="diamond"),
+            yaxis="y2",
+        ))
+    layout_kwargs = dict(
+        height=height,
+        margin=dict(t=40 if title else 10, b=10, l=50, r=50 if has_secondary else 20),
+        hovermode="x unified",
+        yaxis=dict(rangemode="tozero", tickformat=","),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5),
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+    )
+    if has_secondary:
+        layout_kwargs["yaxis2"] = dict(
+            overlaying="y", side="right", showgrid=False,
+            ticksuffix=secondary_suffix, title=None,
+        )
+    if title:  # title=None을 그대로 넘기면 프론트엔드에서 "undefined"로 표시되는 문제 방지
+        layout_kwargs["title"] = title
+    fig.update_layout(**layout_kwargs)
+    st.plotly_chart(fig, use_container_width=True, config=dict(displaylogo=False))
+
+
+def render_r2_mae_card(col, label, r2, mae, delta_r2=None):
+    """R²와 MAE를 같은 줄에 동일한 크기로 나란히 보여주는 카드. delta_r2가 있으면 그 아래 작게 개선폭 표시."""
+    delta_html = ""
+    if delta_r2 is not None:
+        color = "#16a34a" if delta_r2 >= 0 else "#dc2626"
+        arrow = "↑" if delta_r2 >= 0 else "↓"
+        sign = "+" if delta_r2 >= 0 else ""
+        delta_html = (f'<div style="font-size:0.85rem;color:{color};margin-top:4px;">'
+                      f'{arrow} {sign}{delta_r2:.4f}</div>')
+    col.markdown(f"""
+<div style="font-size:0.8rem;color:#666;margin-bottom:2px;">{label}</div>
+<div style="display:flex;align-items:baseline;gap:0.6rem;flex-wrap:wrap;">
+  <span style="font-size:1.9rem;font-weight:700;color:#1f2937;">{r2:.4f}</span>
+  <span style="font-size:1.9rem;font-weight:700;color:#166534;background-color:#dcfce7;
+               padding:0.05em 0.4em;border-radius:0.4em;">MAE {mae:,.0f}</span>
+</div>
+{delta_html}
+""", unsafe_allow_html=True)
+
+
+# ==========================================
+# 공통: 방법2용 구글시트 일별 평균기온 → 월별 평균 집계
+
+SALES_SHEET_URL = "https://docs.google.com/spreadsheets/d/1-8RIPIkjnVXxoh5QJs6598nnHkWOGmrO655jr3b3g04/export?format=csv&gid=0"
+PLAN_SHEET_URL = "https://docs.google.com/spreadsheets/d/1zu2R21_P6z6yCeWz7yX1K6IYhj541hcr3IvCAaHLEQ8/export?format=csv&gid=0"
+
+# ── Ver2(동절기/하절기 분리 모델)용 기준온도 — 기존 HDD/CDD 기준과 동일 ──
+WINTER_T = 18.0  # 검침기온 ≤ 18℃ → 동절기 모델 (HDD 기준온도)
+SUMMER_T = 26.0  # 검침기온 ≥ 26℃ → 하절기 모델 (CDD 기준온도)
+
+@st.cache_data
+def load_daily_temp_for_cooling():
+    """
+    구글시트(13HrIz6O...)의 일자 단위 원본 기온을 그대로 로드한다.
+    (load_monthly_avg_temp()는 이미 월평균으로 뭉개버리므로,
+     검침기간 전월16~당월15 계산을 위해 일자 단위로 별도 로드)
+    """
+    sheet_url = "https://docs.google.com/spreadsheets/d/13HrIz6OytYDykXeXzXJ02I6XbaKin1YaKBoO2kBd6Bs/export?format=csv&gid=0"
+    try:
+        df = pd.read_csv(sheet_url)
+    except Exception as e:
+        st.error(f"❌ 일별기온 구글시트 로드 오류: {e}")
+        st.stop()
+
+    col_list = df.columns.tolist()
+    date_cols = [c for c in col_list if '날짜' in c or 'date' in c.lower() or 'Date' in c]
+    DATE_COL = date_cols[0] if date_cols else col_list[0]
+    temp_cols = [c for c in col_list if '평균기온' in c] or \
+                [c for c in col_list if '기온' in c or 'temp' in c.lower()]
+    TEMP_COL = temp_cols[0] if temp_cols else col_list[1]
+
+    df['Date'] = pd.to_datetime(df[DATE_COL], errors='coerce')
+    df = df.dropna(subset=['Date'])
+    df['Year']  = df['Date'].dt.year
+    df['Month'] = df['Date'].dt.month
+    df['Day']   = df['Date'].dt.day
+    df[TEMP_COL] = pd.to_numeric(df[TEMP_COL], errors='coerce')
+    df = df.dropna(subset=[TEMP_COL])
+    return df[['Date', 'Year', 'Month', 'Day', TEMP_COL]].rename(columns={TEMP_COL: 'Avg_Temp'})
+
+
+def compute_meter_reading_temp(daily_df):
+    """
+    검침기간 평균기온 = 전월16일~말일 + 당월1일~15일 평균 (일평균기온 기준, 정밀 시간대 아님).
+    반환: DataFrame(Year, Month, 검침기온)
+    """
+    rows = []
+    for (y, m), _ in daily_df.groupby(['Year', 'Month']):
+        cur_half = daily_df[(daily_df['Year'] == y) & (daily_df['Month'] == m) &
+                             (daily_df['Day'] <= 15)]['Avg_Temp']
+        py, pm = (y - 1, 12) if m == 1 else (y, m - 1)
+        prev_half = daily_df[(daily_df['Year'] == py) & (daily_df['Month'] == pm) &
+                              (daily_df['Day'] >= 16)]['Avg_Temp']
+        combined = pd.concat([prev_half, cur_half]).dropna()
+        if len(combined) >= 5:
+            rows.append({'Year': int(y), 'Month': int(m), '검침기온': combined.mean()})
+    return pd.DataFrame(rows)
+
+
+@st.cache_data
+def load_cooling_sales():
+    """판매량 실적 구글시트 — '냉방용' 컬럼 로드."""
+    try:
+        df = pd.read_csv(SALES_SHEET_URL)
+    except Exception as e:
+        st.error(f"❌ 판매량 구글시트 로드 오류: {e}")
+        st.stop()
+
+    col_list = df.columns.tolist()
+    cooling_col = None
+    for c in col_list:
+        if '냉방' in c:
+            cooling_col = c; break
+    if cooling_col is None:
+        st.error("판매량 시트에서 '냉방용' 컬럼을 찾을 수 없습니다.")
+        st.stop()
+
+    year_col  = '연' if '연' in col_list else ('Year' if 'Year' in col_list else col_list[1])
+    month_col = '월' if '월' in col_list else ('Month' if 'Month' in col_list else col_list[2])
+
+    out = df.rename(columns={year_col: 'Year', month_col: 'Month'})[['Year', 'Month', cooling_col]].copy()
+    out[cooling_col] = pd.to_numeric(
+        out[cooling_col].astype(str).str.replace(r'[^\d.\-]', '', regex=True), errors='coerce')
+    out['Year']  = pd.to_numeric(out['Year'], errors='coerce')
+    out['Month'] = pd.to_numeric(out['Month'], errors='coerce')
+    out = out.dropna(subset=['Year', 'Month', cooling_col])
+    out['Year']  = out['Year'].astype(int)
+    out['Month'] = out['Month'].astype(int)
+    out = out[out[cooling_col] > 0].reset_index(drop=True)
+    return out.rename(columns={cooling_col: '판매량_실적'})
+
+
+@st.cache_data
+def load_cooling_plan():
+    """
+    '상품별판매량 계획' 구글시트 — '냉방용' 컬럼(기존 계획값) 로드.
+    로드 실패/컬럼 미탐지 시 None을 반환하며, 호출부에서 계획 비교 없이 진행하도록 처리한다.
+    """
+    try:
+        df = pd.read_csv(PLAN_SHEET_URL)
+    except Exception as e:
+        st.sidebar.warning(f"⚠️ 판매량 계획 시트 로드 실패: {e} (계획 비교 생략)")
+        return None
+
+    col_list = df.columns.tolist()
+    plan_col = None
+    for c in col_list:
+        if '냉방' in c:
+            plan_col = c; break
+    if plan_col is None:
+        st.sidebar.warning("판매량 계획 시트에서 '냉방용' 컬럼을 찾을 수 없어 계획 비교를 생략합니다.")
+        return None
+
+    year_col  = '연' if '연' in col_list else ('Year' if 'Year' in col_list else col_list[1])
+    month_col = '월' if '월' in col_list else ('Month' if 'Month' in col_list else col_list[2])
+
+    out = df.rename(columns={year_col: 'Year', month_col: 'Month'})[['Year', 'Month', plan_col]].copy()
+    out[plan_col] = pd.to_numeric(
+        out[plan_col].astype(str).str.replace(r'[^\d.\-]', '', regex=True), errors='coerce')
+    out['Year']  = pd.to_numeric(out['Year'], errors='coerce')
+    out['Month'] = pd.to_numeric(out['Month'], errors='coerce')
+    out = out.dropna(subset=['Year', 'Month', plan_col])
+    out['Year']  = out['Year'].astype(int)
+    out['Month'] = out['Month'].astype(int)
+    return out.rename(columns={plan_col: '판매량_계획'})
+
+
+def fit_piecewise_seasonal_models(train_df, x_col='검침기온', y_col='판매량_실적', degree=3):
+    """
+    검침기온 기준 동절기(≤WINTER_T)/하절기(≥SUMMER_T) 데이터를 각각 나눠
+    별도의 다항식 모델을 학습한다. (이중계상 방지를 위해 중간구간 데이터는 학습에서 제외,
+    예측 시 18℃/26℃ 경계값을 선형보간하여 연결)
+    """
+    winter_data = train_df[train_df[x_col] <= WINTER_T]
+    summer_data = train_df[train_df[x_col] >= SUMMER_T]
+
+    models = {'winter': None, 'summer': None}
+    min_pts = degree + 1
+    if len(winter_data) >= min_pts:
+        mw = make_pipeline(PolynomialFeatures(degree=degree, include_bias=False), LinearRegression())
+        mw.fit(winter_data[[x_col]], winter_data[y_col])
+        models['winter'] = mw
+    if len(summer_data) >= min_pts:
+        ms = make_pipeline(PolynomialFeatures(degree=degree, include_bias=False), LinearRegression())
+        ms.fit(summer_data[[x_col]], summer_data[y_col])
+        models['summer'] = ms
+    return models, winter_data, summer_data
+
+
+def predict_piecewise_seasonal(models, x_values):
+    """
+    x_values(검침기온 배열)에 대해:
+      x <= WINTER_T        → 동절기 모델 예측
+      x >= SUMMER_T         → 하절기 모델 예측
+      WINTER_T < x < SUMMER_T → 두 모델의 경계값(18℃/26℃ 지점 예측)을 선형보간
+    """
+    x_arr = np.asarray(x_values, dtype=float)
+    mw, ms = models.get('winter'), models.get('summer')
+    w_at_boundary = float(mw.predict([[WINTER_T]])[0]) if mw is not None else None
+    s_at_boundary = float(ms.predict([[SUMMER_T]])[0]) if ms is not None else None
+
+    preds = np.full_like(x_arr, np.nan, dtype=float)
+    for i, x in enumerate(x_arr):
+        if np.isnan(x):
+            continue
+        if x <= WINTER_T:
+            preds[i] = float(mw.predict([[x]])[0]) if mw is not None else np.nan
+        elif x >= SUMMER_T:
+            preds[i] = float(ms.predict([[x]])[0]) if ms is not None else np.nan
+        else:
+            if w_at_boundary is not None and s_at_boundary is not None:
+                frac = (x - WINTER_T) / (SUMMER_T - WINTER_T)
+                preds[i] = w_at_boundary * (1 - frac) + s_at_boundary * frac
+            elif w_at_boundary is not None:
+                preds[i] = w_at_boundary
+            elif s_at_boundary is not None:
+                preds[i] = s_at_boundary
+    return preds
+
+
+def poly_eq_str(coefs, intercept):
+    """
+    PolynomialFeatures(degree=n, include_bias=False) 계수 배열(coefs, 오름차순: x, x², x³...)과
+    절편(intercept)을 받아 차수에 상관없이 "y = ax^n + ... + c" 형태 문자열을 만든다.
+    """
+    n = len(coefs)
+    parts = []
+    for power in range(n, 0, -1):
+        c = coefs[power - 1]
+        parts.append(f"{c:+.2f}x^{power}" if power > 1 else f"{c:+.2f}x")
+    parts.append(f"{intercept:+.0f}")
+    eq = " ".join(parts)
+    if eq.startswith("+"):
+        eq = eq[1:]
+    return f"y = {eq}"
+
+
+def _dynamic_fmt(df, x_col):
+    """df의 x_col을 제외한 모든 컬럼에 대해 포맷을 자동 결정한다.
+    '오차율' 또는 'MAPE'가 들어간 컬럼은 %, '기온'이 들어간 컬럼은 소수 1자리+℃, 나머지는 천단위 콤마."""
+    fmt = {}
+    for c in df.columns:
+        if c == x_col:
+            continue
+        if '오차율' in c or 'MAPE' in c:
+            fmt[c] = "{:.1f}%"
+        elif '기온' in c:
+            fmt[c] = "{:.1f}℃"
+        else:
+            fmt[c] = "{:,.0f}"
+    return fmt
+
+
+def _apply_mae_toggle(df, x_col, use_abs):
+    """use_abs=True면 '차이'/'오차율' 컬럼을 절대값으로 바꾸고, '차이'→'MAE', '오차율(%)'→'MAPE(%)'로 표시한다."""
+    if not use_abs:
+        return df
+    out = df.copy()
+    rename_map = {}
+    for c in out.columns:
+        if c == x_col:
+            continue
+        if '차이' in c:
+            out[c] = out[c].abs()
+            rename_map[c] = c.replace('차이', 'MAE')
+        elif '오차율' in c:
+            out[c] = out[c].abs()
+            rename_map[c] = c.replace('오차율(%)', 'MAPE(%)')
+    if rename_map:
+        out = out.rename(columns=rename_map)
+    return out
+
+
+def _ensure_baseline_cols(selected, target_col, plan_col='판매량_계획', has_plan=False):
+    """
+    표에는 사용자가 멀티선택에서 빼더라도 '계획'과 '실적'(target_col)을 항상 맨 앞에 강제로 포함시킨다.
+    (이 둘이 빠지면 비교 기준이 없어져 차이/하이라이트가 전혀 표시되지 않기 때문)
+    순서: [판매량_계획(있으면), target_col, 그 외 선택된 예측 시리즈(선택 순서 유지)]
+    """
+    others = [c for c in selected if c not in (plan_col, target_col)]
+    result = [plan_col] if has_plan else []
+    result.append(target_col)
+    result += others
+    return result
+
+
+_DIFF_TABLE_CSS = """
+<style>
+.difftbl-wrap { overflow-x:auto; border:1px solid #e2e8f0; border-radius:6px; margin-bottom:0.8rem; }
+.difftbl { border-collapse:collapse; font-size:0.82rem;
+           font-family:'Segoe UI','Noto Sans KR',sans-serif; }
+.difftbl th {
+    background:#f8fafc; color:#334155; padding:6px 10px; text-align:center;
+    border:1px solid #e2e8f0; font-weight:600; white-space:normal;
+    word-break:keep-all; min-width:120px; max-width:150px; line-height:1.3;
+}
+.difftbl td { padding:5px 10px; text-align:right; border:1px solid #eef1f5; white-space:nowrap; }
+.difftbl th.difftbl-x, .difftbl td.difftbl-x { background:#eef2f7 !important; font-weight:600; }
+.difftbl td.difftbl-x { text-align:center; }
+.difftbl th.difftbl-target, .difftbl td.difftbl-target { background:#dbeafe !important; font-weight:600; }
+.difftbl tr:hover td { background:#f8fafc; }
+</style>
+"""
+
+
+def _fmt_diff_value(col, val):
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return "-"
+    if '오차율' in col or 'MAPE' in col:
+        return f"{val:.1f}%"
+    if '기온' in col:
+        return f"{val:.1f}℃"
+    try:
+        return f"{val:,.0f}"
+    except (TypeError, ValueError):
+        return str(val)
+
+
+def _fmt_x_value(val):
+    """구분 열(Year 등) 표시용. 정수형 float(예: 2023.0)이면 '.0'을 떼고 정수로 보여준다."""
+    if isinstance(val, float) and val == int(val):
+        return str(int(val))
+    return str(val)
+
+
+def render_html_diff_table(df, x_col, target_col=None):
+    """
+    표를 HTML 테이블로 렌더링한다 (st.dataframe은 헤더 줄바꿈을 지원하지 않아 텍스트가
+    잘리는 문제가 있어, 컬럼명의 '\\n'을 <br>로 바꿔 풀네임을 2줄로 보여주기 위함).
+    x_col(구분 열)과 target_col(실적 등 기준 열)은 배경색으로 하이라이트한다.
+    """
+    cols = list(df.columns)
+
+    def _cls(c):
+        if c == x_col:
+            return ' class="difftbl-x"'
+        if target_col and c == target_col:
+            return ' class="difftbl-target"'
+        return ""
+
+    hdr = "".join(f"<th{_cls(c)}>{c.replace(chr(10), '<br>')}</th>" for c in cols)
+    body = ""
+    for _, row in df.iterrows():
+        cells = "".join(
+            f"<td{_cls(c)}>{_fmt_x_value(row[c]) if c == x_col else _fmt_diff_value(c, row[c])}</td>" for c in cols)
+        body += f"<tr>{cells}</tr>"
+
+    st.markdown(f"""{_DIFF_TABLE_CSS}
+<div class="difftbl-wrap">
+<table class="difftbl">
+<thead><tr>{hdr}</tr></thead>
+<tbody>{body}</tbody>
+</table>
+</div>""", unsafe_allow_html=True)
+
+
+def render_diff_table(df, x_col, target_col=None, key_prefix="tbl"):
+    """
+    비교표 렌더링 공통 헬퍼.
+    - 좌측 상단에 'MAE 변환' 토글(체크박스)을 두고, 켜면 차이 컬럼을 절대값(MAE 스타일)으로 표시
+    - x_col(구분 열)과 target_col(실적 등 기준 열)에 배경색 하이라이트 적용
+    - 컬럼명에 줄바꿈(\\n)이 들어간 긴 헤더는 HTML 테이블로 렌더링해 풀네임을 2줄로 보여준다.
+    """
+    use_mae = st.checkbox("📌 차이를 절대값(MAE)으로 표시", key=f"{key_prefix}_mae_toggle")
+    disp = _apply_mae_toggle(df, x_col, use_mae)
+    render_html_diff_table(disp, x_col, target_col=target_col)
+
+
+def render_yearly_diff_table(monthly_raw_df, target_col, selected_cols, key_prefix="tbl", target_label=None):
+    """
+    연도별 집계표 전용 렌더러. monthly_raw_df는 'Year'(또는 'Year_Month') + 선택 시리즈의
+    "월별 원본값"을 담은 DataFrame이어야 한다 (차이 컬럼 없이).
+
+    MAE 토글 off: 연간 합계끼리의 순차이 (연간계획합 − 연간실적합) — 부호 있는 순차이.
+    MAE 토글 on : 월별로 먼저 |차이|를 구한 뒤 연도별 평균 — 진짜 MAE(평균절대오차).
+                  (연간 합계끼리의 차이에 단순히 절대값만 씌우면 +/-가 서로 상쇄된 순차이의
+                  절대값이 나와서 실제 월별 오차 크기를 반영하지 못하므로, 반드시 월 단위에서
+                  먼저 절대값을 취하고 나서 연도로 집계해야 한다.)
+    """
+    use_mae = st.checkbox("📌 차이를 절대값(MAE)으로 표시 — 월별 오차를 먼저 절대값화한 뒤 연평균",
+                          key=f"{key_prefix}_mae_toggle")
+
+    tmp = monthly_raw_df.copy()
+    if 'Year' not in tmp.columns:
+        tmp['Year'] = tmp['Year_Month'].str[:4].astype(int)
+
+    cols = [c for c in selected_cols if c in tmp.columns]
+    has_target = target_col in cols
+    label = target_label or SERIES_LABELS.get(target_col, target_col)
+
+    yearly_raw = tmp.groupby('Year')[cols].sum().reset_index()
+
+    # MAE 모드용: 월별 signed 차이/오차율을 미리 계산
+    monthly_diff, monthly_pct = {}, {}
+    if has_target:
+        for c in cols:
+            if c == target_col:
+                continue
+            monthly_diff[c] = tmp[c] - tmp[target_col]
+            with np.errstate(divide='ignore', invalid='ignore'):
+                monthly_pct[c] = np.where(tmp[target_col] != 0, monthly_diff[c] / tmp[target_col] * 100, np.nan)
+
+    out = pd.DataFrame({'Year': yearly_raw['Year']})
+    pending, target_seen = [], False
+
+    def add_diff(c):
+        if use_mae:
+            out[f'{c}\n{label}대비MAE'] = pd.Series(monthly_diff[c], index=tmp.index).abs() \
+                .groupby(tmp['Year']).mean().values
+            out[f'{c}\n{label}대비MAPE(%)'] = pd.Series(monthly_pct[c], index=tmp.index).abs() \
+                .groupby(tmp['Year']).mean().values
+        else:
+            diff_val = yearly_raw[c] - yearly_raw[target_col]
+            out[f'{c}\n{label}대비차이'] = diff_val
+            with np.errstate(divide='ignore', invalid='ignore'):
+                out[f'{c}\n{label}대비오차율(%)'] = np.where(
+                    yearly_raw[target_col] != 0, diff_val / yearly_raw[target_col] * 100, np.nan)
+
+    for c in cols:
+        out[c] = yearly_raw[c]
+        if c == target_col:
+            target_seen = True
+            for pc in pending:
+                add_diff(pc)
+            continue
+        if not has_target:
+            continue
+        if not target_seen:
+            pending.append(c)
+        else:
+            add_diff(c)
+
+    render_html_diff_table(out, 'Year', target_col=target_col)
+    return out
+
+
+def _build_diff_table(df, x_col, target_col, selected_cols, target_label=None):
+    """
+    df에서 x_col + selected_cols(원본값 컬럼)로 표를 만든다.
+    컬럼 순서는 selected_cols 순서를 따르되, target_col(예: 실적)이 먼저 나온 컬럼들의
+    차이/오차율은 target_col 바로 뒤로 몰아서 보여주고, target_col 이후에 나오는 컬럼들은
+    (원본값 → 차이 → 오차율) 세트로 바로 이어 붙인다.
+    예) selected_cols=[계획, 실적, v1, v2] → 계획, 실적, 계획_실적대비차이, 계획_실적대비오차율(%),
+        v1, v1_실적대비차이, v1_실적대비오차율(%), v2, v2_실적대비차이, v2_실적대비오차율(%)
+    target_label을 안 주면 SERIES_LABELS에서 target_col의 한글 라벨을 찾아 사용한다.
+    """
+    cols = [c for c in selected_cols if c in df.columns]
+    has_target = target_col in cols
+    label = target_label or SERIES_LABELS.get(target_col, target_col)
+
+    out = pd.DataFrame({x_col: df[x_col]})
+    pending_before_target = []  # target보다 먼저 선택된 비교 대상 컬럼 (차이 계산을 target 등장 후로 미룸)
+    target_seen = False
+
+    def _add_diff(colname):
+        out[f'{colname}\n{label}대비차이'] = df[colname] - df[target_col]
+        with np.errstate(divide='ignore', invalid='ignore'):
+            out[f'{colname}\n{label}대비오차율(%)'] = np.where(
+                df[target_col] != 0, out[f'{colname}\n{label}대비차이'] / df[target_col] * 100, np.nan)
+
+    for c in cols:
+        out[c] = df[c]
+        if c == target_col:
+            target_seen = True
+            for pc in pending_before_target:
+                _add_diff(pc)
+            continue
+        if not has_target:
+            continue
+        if not target_seen:
+            pending_before_target.append(c)
+        else:
+            _add_diff(c)
+    return out
+
+
+def render_cooling_analysis():
+    st.header("🧊 냉방용 사용량 분석 심화ver")
+    st.markdown("- 전월16일부터 당월15일까지의 실제기온 평균 적용 (세 가지 모델 모두 공통)")
+
+    with st.spinner("냉방용 데이터를 불러오는 중입니다..."):
+        daily_temp_df = load_daily_temp_for_cooling()
+        meter_temp_df = compute_meter_reading_temp(daily_temp_df)
+        sales_df = load_cooling_sales()
+        plan_df = load_cooling_plan()  # None일 수 있음 (로드 실패/컬럼 미탐지 시 계획 비교 생략)
+        merged_cool = pd.merge(meter_temp_df, sales_df, on=['Year', 'Month'], how='inner')
+        merged_cool['Year_Month'] = merged_cool.apply(
+            lambda r: f"{int(r['Year'])}-{int(r['Month']):02d}", axis=1)
+
+    if merged_cool.empty:
+        st.warning("실제기온과 판매량 데이터의 겹치는 기간이 없습니다.")
+        st.stop()
+
+    TARGET = '판매량_실적'
+    all_years_cool = sorted(merged_cool['Year'].unique())
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("**🧊 냉방용 분석 설정**")
+    train_years_c = st.sidebar.multiselect(
+        "1. AI 학습 연도 선택 (냉방용)", options=all_years_cool,
+        default=all_years_cool, key="cool_train_years")
+    eval_years_c = st.sidebar.multiselect(
+        "2. 과거 적합도 검증 연도 (냉방용)", options=all_years_cool,
+        default=all_years_cool[-2:], key="cool_eval_years")
+    max_year_c = int(merged_cool['Year'].max())
+    future_years_c = st.sidebar.multiselect(
+        "3. 미래 시나리오 추정 연도 (냉방용)",
+        options=list(range(max_year_c + 1, max_year_c + 6)),
+        default=[max_year_c + 1, max_year_c + 2], key="cool_future_years")
+    y_years_c = st.sidebar.slider(
+        "4. 미래 예측기온 추정 기준 (최근 Y년 평균, 냉방용)",
+        min_value=1, max_value=10, value=3, step=1, key="cool_y_years")
+    sim_base_years_c = list(range(max_year_c - y_years_c + 1, max_year_c + 1))
+
+    if not train_years_c or not eval_years_c:
+        st.warning("👈 좌측 패널에서 냉방용 학습/검증 연도를 선택해주세요.")
+        st.stop()
+
+    train_df_c = merged_cool[merged_cool['Year'].isin(train_years_c)]
+    x_train_c = train_df_c[['검침기온']]
+    y_train_c = train_df_c[TARGET]
+
+    # 기준모델(단일 3차식) — 비교 지표용으로만 사용, 별도 섹션은 만들지 않음
+    model_base = make_pipeline(PolynomialFeatures(degree=3, include_bias=False), LinearRegression())
+    model_base.fit(x_train_c, y_train_c)
+    cb = model_base.named_steps['linearregression'].coef_
+    ib = model_base.named_steps['linearregression'].intercept_
+
+    # 분리모델(3차식) — 2차식 채택 근거 비교용 (표/차트에는 노출하지 않고 R² 지표에만 사용)
+    models_cubic, winter_data_c3, summer_data_c3 = fit_piecewise_seasonal_models(
+        train_df_c, x_col='검침기온', y_col=TARGET, degree=3)
+    has_cubic_split_eq = models_cubic['winter'] is not None and models_cubic['summer'] is not None
+    if has_cubic_split_eq:
+        cw3 = models_cubic['winter'].named_steps['linearregression'].coef_
+        iw3 = models_cubic['winter'].named_steps['linearregression'].intercept_
+        cs3 = models_cubic['summer'].named_steps['linearregression'].coef_
+        is3 = models_cubic['summer'].named_steps['linearregression'].intercept_
+
+    # ══════════════════════════════════════════
+    # 모델 설명 (요약)
+    # ══════════════════════════════════════════
+    st.markdown("---")
+    item2_eq = ""
+    if has_cubic_split_eq:
+        item2_eq = f"동절기: ${poly_eq_str(cw3, iw3)}$  \n하절기: ${poly_eq_str(cs3, is3)}$"
+    st.markdown(f"""
+**1. 일반적인 3차 다항식 적용**
+(여름, 겨울철 패턴 학습시 과대예측 발생 가능)
+${poly_eq_str(cb, ib)}$
+
+**2. 동절기/하절기 분리 (HDD {WINTER_T:.0f}℃ / CDD {SUMMER_T:.0f}℃ 기준온도 참고)**  
+{item2_eq}
+
+**3. 추가 모델 (2차식)**
+하절기는 학습 표본이 적어, 3차식 계수 불안정
+""")
+
+    models_final, winter_data_f, summer_data_f = fit_piecewise_seasonal_models(
+        train_df_c, x_col='검침기온', y_col=TARGET, degree=2)
+
+    if models_final['winter'] is None or models_final['summer'] is None:
+        st.warning(
+            f"동절기(≤{WINTER_T:.0f}℃, n={len(winter_data_f)}) 또는 "
+            f"하절기(≥{SUMMER_T:.0f}℃, n={len(summer_data_f)}) 학습 데이터가 3건 미만이라 "
+            "모델을 만들 수 없습니다. 학습 연도를 늘려주세요."
+        )
+        st.stop()
+
+    cw = models_final['winter'].named_steps['linearregression'].coef_
+    iw = models_final['winter'].named_steps['linearregression'].intercept_
+    cs = models_final['summer'].named_steps['linearregression'].coef_
+    isu = models_final['summer'].named_steps['linearregression'].intercept_
+    r2_w = r2_score(winter_data_f[TARGET], models_final['winter'].predict(winter_data_f[['검침기온']]))
+    r2_s = r2_score(summer_data_f[TARGET], models_final['summer'].predict(summer_data_f[['검침기온']]))
+
+    col_w, col_s = st.columns(2)
+    with col_w:
+        st.info(f"""
+**❄️ 동절기 모델 (실제기온 ≤ {WINTER_T:.0f}℃, n={len(winter_data_f)}, 2차식)**
+
+학습 R² = {r2_w * 100:.2f}%
+
+${poly_eq_str(cw, iw)}$
+""")
+    with col_s:
+        st.info(f"""
+**☀️ 하절기 모델 (실제기온 ≥ {SUMMER_T:.0f}℃, n={len(summer_data_f)}, 2차식)**
+
+학습 R² = {r2_s * 100:.2f}%
+
+${poly_eq_str(cs, isu)}$
+""")
+    st.caption(f"※ {WINTER_T:.0f}℃부터 {SUMMER_T:.0f}℃ 사이 구간은 두 모델의 경계값을 선형보간하여 연결(중복계상 방지) "
+               f"· 기온 소스: 구글시트 일별 기온 → 검침기간(전월16일부터 당월15일까지) 평균 · 판매량 소스: 판매량 실적 시트 — 냉방용")
+
+    with st.expander("🔎 실제기온 ↔ 냉방용 판매량 산점도 (학습 데이터)"):
+        st.scatter_chart(train_df_c.rename(columns={'검침기온': '실제기온'}), x='실제기온', y=TARGET, height=380)
+
+    # ══════════════════════════════════════════
+    # 과거 적합도 검증
+    # ══════════════════════════════════════════
+    st.subheader("📊 과거 모델 적합도 검증 (냉방용)")
+    eval_df_c = merged_cool[merged_cool['Year'].isin(eval_years_c)].copy()
+    eval_df_c['예측_판매량_v1'] = model_base.predict(eval_df_c[['검침기온']])
+    eval_df_c['예측_판매량_v3'] = predict_piecewise_seasonal(models_final, eval_df_c['검침기온'].values)
+
+    has_plan_eval = False
+    if plan_df is not None:
+        eval_df_c = eval_df_c.merge(plan_df, on=['Year', 'Month'], how='left')
+        has_plan_eval = eval_df_c['판매량_계획'].notna().any()
+
+    valid_eval = eval_df_c['예측_판매량_v3'].notna()
+    r2_base_eval = r2_score(eval_df_c.loc[valid_eval, TARGET], eval_df_c.loc[valid_eval, '예측_판매량_v1'])
+    mae_base_eval = np.mean(np.abs(eval_df_c.loc[valid_eval, '예측_판매량_v1'] - eval_df_c.loc[valid_eval, TARGET]))
+    r2_final_eval = r2_score(eval_df_c.loc[valid_eval, TARGET], eval_df_c.loc[valid_eval, '예측_판매량_v3'])
+    mae_final_eval = np.mean(np.abs(eval_df_c.loc[valid_eval, '예측_판매량_v3'] - eval_df_c.loc[valid_eval, TARGET]))
+
+    has_cubic_split = models_cubic['winter'] is not None and models_cubic['summer'] is not None
+    if has_cubic_split:
+        eval_df_c['예측_판매량_v2'] = predict_piecewise_seasonal(models_cubic, eval_df_c['검침기온'].values)
+        r2_cubic_eval = r2_score(eval_df_c.loc[valid_eval, TARGET], eval_df_c.loc[valid_eval, '예측_판매량_v2'])
+        mae_cubic_eval = np.mean(np.abs(eval_df_c.loc[valid_eval, '예측_판매량_v2'] - eval_df_c.loc[valid_eval, TARGET]))
+
+    # 기존 계획(판매량_계획) 자체도 실적과 비교해 R²/MAE 산출 — "새 예측방식이 계획보다 나은가"를 바로 보여주기 위함
+    if has_plan_eval:
+        valid_plan_eval = valid_eval & eval_df_c['판매량_계획'].notna()
+        r2_plan_eval = r2_score(eval_df_c.loc[valid_plan_eval, TARGET], eval_df_c.loc[valid_plan_eval, '판매량_계획'])
+        mae_plan_eval = np.mean(np.abs(eval_df_c.loc[valid_plan_eval, '판매량_계획'] - eval_df_c.loc[valid_plan_eval, TARGET]))
+
+    monthly_eval_c = eval_df_c[['Year_Month', 'Year', 'Month', TARGET, '예측_판매량_v1', '예측_판매량_v3', '검침기온']].copy()
+    if has_cubic_split:
+        monthly_eval_c['예측_판매량_v2'] = eval_df_c['예측_판매량_v2']
+    if has_plan_eval:
+        monthly_eval_c['판매량_계획'] = eval_df_c['판매량_계획']
+
+    all_series_eval = (['판매량_계획'] if has_plan_eval else []) + [TARGET, '예측_판매량_v1'] \
+        + (['예측_판매량_v2'] if has_cubic_split else []) + ['예측_판매량_v3']
+
+    # R²/MAE 카드 목록 구성 — MAE가 가장 낮은 카드에 자동으로 ✅ 표시
+    metrics = []
+    if has_plan_eval:
+        metrics.append({"key": "plan", "label": "기존 계획(판매량_계획)", "r2": r2_plan_eval,
+                        "mae": mae_plan_eval, "delta": None})
+    metrics.append({"key": "base", "label": "기존 단일 3차식", "r2": r2_base_eval,
+                    "mae": mae_base_eval, "delta": None})
+    if has_cubic_split:
+        metrics.append({"key": "cubic", "label": "분리·3차식 (참고)", "r2": r2_cubic_eval,
+                        "mae": mae_cubic_eval, "delta": r2_cubic_eval - r2_base_eval})
+    metrics.append({"key": "final", "label": "분리·2차식", "r2": r2_final_eval,
+                    "mae": mae_final_eval, "delta": r2_final_eval - r2_base_eval})
+
+    best_i = min(range(len(metrics)), key=lambda i: metrics[i]["mae"])
+    mcols = st.columns(len(metrics))
+    for i, m in enumerate(metrics):
+        label = f'✅ {m["label"]}' if i == best_i else m["label"]
+        render_r2_mae_card(mcols[i], label, m["r2"], m["mae"], delta_r2=m["delta"])
+
+    # 차트는 항상 전체 시리즈 표시 — 플롯리 자체 범례 클릭으로 라인 표시/숨김
+    show_temp_eval = st.checkbox("🌡️ 실제기온(전월16일부터 당월15일까지) 표시", key="eval_show_temp")
+    render_line_chart(monthly_eval_c, 'Year_Month', all_series_eval, height=420,
+                      secondary_col='검침기온' if show_temp_eval else None,
+                      secondary_name='실제기온(℃)')
+
+    # 아래 선택 위젯은 표(연도별/월별)에만 반영됨 (차트에는 영향 없음)
+    st.markdown("**📌 표에 표시할 항목 선택** (아래 연도별·월별 표에만 반영됩니다)")
+    selected_eval = st.multiselect(
+        "표시할 시리즈", options=all_series_eval, default=all_series_eval,
+        format_func=lambda c: SERIES_LABELS.get(c, c), key="eval_series_select")
+    if not selected_eval:
+        st.info("표시할 항목을 1개 이상 선택해주세요. 우선 전체 항목을 표시합니다.")
+        selected_eval = all_series_eval
+
+    table_series_eval = _ensure_baseline_cols(selected_eval, TARGET, has_plan=has_plan_eval)
+
+    st.markdown("**📆 연도별 실적 대비 차이 요약**")
+    yearly_table_eval = render_yearly_diff_table(monthly_eval_c, TARGET, table_series_eval, key_prefix="eval_yearly")
+
+    monthly_table_eval = _build_diff_table(monthly_eval_c, 'Year_Month', TARGET, table_series_eval)
+    st.markdown("**🗂️ 월별 상세 비교**")
+    render_diff_table(monthly_table_eval, 'Year_Month', target_col=TARGET, key_prefix="eval_monthly")
+
+    dl_eval1, dl_eval2 = st.columns(2)
+    with dl_eval1:
+        csv_yearly_eval = yearly_table_eval.to_csv(index=False).encode('utf-8-sig')
+        st.download_button("📥 연도별 요약 다운로드", data=csv_yearly_eval,
+                           file_name="냉방용_연도별요약.csv", mime="text/csv", key="dl_eval_yearly")
+    with dl_eval2:
+        csv_monthly_eval = monthly_table_eval.to_csv(index=False).encode('utf-8-sig')
+        st.download_button("📥 월별 상세 다운로드", data=csv_monthly_eval,
+                           file_name="냉방용_과거적합도_검증리포트.csv", mime="text/csv", key="dl_eval_monthly")
+
+    # ══════════════════════════════════════════
+    # 미래 시나리오
+    # ══════════════════════════════════════════
+    st.markdown("---")
+    st.subheader("🔮 미래 냉방용 판매량 추정 시나리오")
+
+    if future_years_c:
+        hist_temp_c = meter_temp_df[meter_temp_df['Year'].isin(sim_base_years_c)]
+        sim_month_temp_c = hist_temp_c.groupby('Month')['검침기온'].mean().reset_index()
+
+        future_rows = []
+        for y in future_years_c:
+            for m in range(1, 13):
+                t = sim_month_temp_c.loc[sim_month_temp_c['Month'] == m, '검침기온']
+                if len(t) > 0:
+                    future_rows.append({'Year': y, 'Month': m, '검침기온': float(t.values[0])})
+        future_df_c = pd.DataFrame(future_rows)
+        future_df_c['예측_판매량_v1'] = model_base.predict(future_df_c[['검침기온']])
+        future_df_c['예측_판매량_v3'] = predict_piecewise_seasonal(models_final, future_df_c['검침기온'].values)
+        if has_cubic_split:
+            future_df_c['예측_판매량_v2'] = predict_piecewise_seasonal(models_cubic, future_df_c['검침기온'].values)
+        future_df_c['Year_Month'] = future_df_c.apply(
+            lambda r: f"{int(r['Year'])}-{int(r['Month']):02d}", axis=1)
+
+        # 실제 실적이 있으면(예: 최근 진행 중인 연도) 함께 표시
+        future_df_c = pd.merge(future_df_c, sales_df, on=['Year', 'Month'], how='left')
+        has_actual = TARGET in future_df_c.columns and future_df_c[TARGET].notna().any()
+
+        # 판매량 계획(기존 계획, 상품별판매량 계획 시트) 병합
+        has_plan_future = False
+        if plan_df is not None:
+            future_df_c = pd.merge(future_df_c, plan_df, on=['Year', 'Month'], how='left')
+            has_plan_future = future_df_c['판매량_계획'].notna().any()
+
+        st.caption(f"미래 예측기온 추정: 최근 {y_years_c}개년"
+                   f"({min(sim_base_years_c)}~{max(sim_base_years_c)}) 동월 실제기온 평균 사용")
+
+        agg_cols_fut = (['판매량_계획'] if has_plan_future else []) + ([TARGET] if has_actual else []) \
+            + ['예측_판매량_v1'] + (['예측_판매량_v2'] if has_cubic_split else []) + ['예측_판매량_v3']
+
+        # 차트는 항상 전체 시리즈 표시 — 플롯리 자체 범례 클릭으로 라인 표시/숨김
+        show_temp_fut = st.checkbox("🌡️ 예측기온(전월16일부터 당월15일까지) 표시", key="future_show_temp")
+        render_line_chart(future_df_c, 'Year_Month', agg_cols_fut, height=420,
+                          secondary_col='검침기온' if show_temp_fut else None,
+                          secondary_name='예측기온(℃)')
+
+        # 아래 선택 위젯은 표(연도별/월별)에만 반영됨 (차트에는 영향 없음)
+        st.markdown("**📌 표에 표시할 항목 선택** (아래 연도별·월별 표에만 반영됩니다)")
+        selected_fut = st.multiselect(
+            "표시할 시리즈", options=agg_cols_fut, default=agg_cols_fut,
+            format_func=lambda c: SERIES_LABELS.get(c, c), key="future_series_select")
+        if not selected_fut:
+            st.info("표시할 항목을 1개 이상 선택해주세요. 우선 전체 항목을 표시합니다.")
+            selected_fut = agg_cols_fut
+
+        future_target_col = TARGET if has_actual else '예측_판매량_v3'
+        table_series_fut = _ensure_baseline_cols(selected_fut, future_target_col, has_plan=has_plan_future)
+
+        st.markdown("**📆 연도별 시나리오 합산**")
+        yearly_future_c = render_yearly_diff_table(
+            future_df_c, future_target_col, table_series_fut, key_prefix="future_yearly")
+
+        monthly_future_diff = _build_diff_table(future_df_c, 'Year_Month', future_target_col, table_series_fut)
+        monthly_future_diff = monthly_future_diff.merge(
+            future_df_c[['Year_Month', '검침기온']], on='Year_Month', how='left')
+        cols_order = ['Year_Month', '검침기온'] + [c for c in monthly_future_diff.columns
+                                                  if c not in ('Year_Month', '검침기온')]
+        disp_future = monthly_future_diff[cols_order].rename(columns={'검침기온': '예측기온'})
+        st.markdown("**🗂️ 월별 시나리오**")
+        render_diff_table(disp_future, 'Year_Month',
+                          target_col=future_target_col if future_target_col in disp_future.columns else None,
+                          key_prefix="future_monthly")
+
+        csv_future_c = disp_future.to_csv(index=False).encode('utf-8-sig')
+        st.download_button("📥 냉방용 미래 시나리오 다운로드", data=csv_future_c,
+                           file_name="냉방용_미래시나리오.csv", mime="text/csv")
+    else:
+        st.info("좌측에서 미래 시나리오 추정 연도를 선택하면 결과가 표시됩니다.")
+
+
+# ══════════════════════════════════════════════
 # 메인
 # ══════════════════════════════════════════════
 
@@ -838,603 +1662,10 @@ def main():
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     # ══════════════════════════════════════════
-    # ── TAB 3: 냉난방공조용 예측 (GHP) ──
+    # ── TAB 3: 판매량 예측 (냉방용) ──
     # ══════════════════════════════════════════
     elif selected_menu == menu_options[2]:
-        st.markdown("### 🧊 냉난방공조용 예측 (GHP)")
-        st.markdown("""
-        <div class="info-box">
-        <b>대상</b>: 냉난방공조용 — GHP(가스히트펌프) 냉·난방 겸용 건물. 기온이 높아도 냉방 가동으로 사용량 발생.<br>
-        <b>검침 기준 기온</b>: 전월 16일~말일 + 당월 1일~15일 평균기온<br>
-        <b>기온 방식 비교</b>: ① 기간평균 방식 (기간 내 기온 평균 → 예측) vs ② 일별합산 방식 (일별 기온 → 일별 예측 → 평균)
-        </div>
-        """, unsafe_allow_html=True)
-
-        if err3:
-            st.error("판매량 데이터(Sheet 3)를 불러오지 못했습니다."); st.stop()
-
-        # ── 데이터 준비 ──
-        # 판매량: Sheet 3 냉방용
-        cooling_col = None
-        for c in sales_df.columns:
-            if "냉방" in str(c) or "냉난방" in str(c):
-                cooling_col = c; break
-        if cooling_col is None:
-            st.error("Sheet 3에서 '냉방용' 열을 찾을 수 없습니다."); st.stop()
-
-        # 공급량: Sheet 1 냉난방공조용
-        supply_product = "냉난방공조용"
-        has_supply = (supply_df is not None and supply_product in supply_df.columns)
-
-        # 검침기온
-        cooling_temp = get_cooling_period_temp(temp_daily)
-        daily_temps_dict = get_cooling_period_daily_temps(temp_daily)
-        if cooling_temp.empty:
-            st.error("검침기간 기온 계산 불가."); st.stop()
-
-        # 판매량 + 검침기온 병합
-        sales_clean = sales_df[["연", "월", cooling_col]].copy()
-        sales_clean[cooling_col] = pd.to_numeric(sales_clean[cooling_col], errors="coerce")
-        sales_merged = sales_clean.merge(cooling_temp, on=["연", "월"], how="inner")
-        sales_merged = sales_merged.dropna(subset=[cooling_col, "검침기온"])
-        sales_merged = sales_merged[sales_merged[cooling_col] > 0].reset_index(drop=True)
-
-        # 공급량 + 검침기온 병합
-        supply_merged = pd.DataFrame()
-        if has_supply:
-            sup_flat = supply_df[[supply_product]].copy()
-            sup_flat["연"] = supply_df.index.year
-            sup_flat["월"] = supply_df.index.month
-            sup_flat = sup_flat.reset_index(drop=True)
-            supply_merged = sup_flat.merge(cooling_temp, on=["연", "월"], how="inner")
-            supply_merged = supply_merged.dropna(subset=[supply_product, "검침기온"])
-            supply_merged = supply_merged[supply_merged[supply_product] > 0].reset_index(drop=True)
-
-        sales_years = sorted(sales_merged["연"].unique().astype(int)) if not sales_merged.empty else []
-        supply_years = sorted(supply_merged["연"].unique().astype(int)) if not supply_merged.empty else []
-        all_cooling_years = sorted(set(sales_years) | set(supply_years))
-
-        if not all_cooling_years:
-            st.warning("데이터가 없습니다."); st.stop()
-
-        info_parts = []
-        if sales_years:
-            info_parts.append(f"판매량 {min(sales_years)}~{max(sales_years)}년 ({len(sales_merged)}건)")
-        if supply_years:
-            info_parts.append(f"공급량 {min(supply_years)}~{max(supply_years)}년 ({len(supply_merged)}건)")
-        st.caption(f"📦 사용 열: 판매량=**{cooling_col}** / 공급량=**{supply_product}** · " + " · ".join(info_parts))
-
-        # ── 공통 설정 ──
-        sc1, sc2 = st.columns(2)
-        with sc1:
-            cooling_train_years = st.multiselect(
-                "학습 연도 선택", options=all_cooling_years, default=all_cooling_years,
-                key="cooling_train_years")
-        with sc2:
-            cooling_pred_year = st.selectbox(
-                "예측/비교 연도", options=list(range(min(all_cooling_years), 2036)),
-                index=len(all_cooling_years) - 1, key="cooling_pred_year")
-
-        st.markdown('<div class="sub">🌡️ 예측 기온 입력</div>', unsafe_allow_html=True)
-        temp_input_mode = st.radio("방식 선택",
-            ["학습기간 월평균 사용", "업로드한 예상기온 사용"],
-            index=0, horizontal=True, key="cooling_temp_mode")
-
-        if st.button("🧮 예측 실행", type="primary", key="btn_cooling_pred"):
-
-            # ═══════════════════════════════════
-            # 모델 학습
-            # ═══════════════════════════════════
-            # 판매량 모델
-            train_sales = sales_merged[sales_merged["연"].isin(cooling_train_years)]
-            has_sales_model = len(train_sales) >= 6
-            if has_sales_model:
-                x_s_tr = train_sales["검침기온"].values.astype(float)
-                y_s_tr = train_sales[cooling_col].values.astype(float)
-                _, r2_sales, model_sales, poly_sales = fit_poly3(x_s_tr, y_s_tr, x_s_tr)
-            else:
-                r2_sales, model_sales, poly_sales = 0, None, None
-
-            # 공급량 모델
-            train_supply = supply_merged[supply_merged["연"].isin(cooling_train_years)] if not supply_merged.empty else pd.DataFrame()
-            has_supply_model = len(train_supply) >= 6
-            if has_supply_model:
-                x_sup_tr = train_supply["검침기온"].values.astype(float)
-                y_sup_tr = train_supply[supply_product].values.astype(float)
-                _, r2_supply, model_supply, poly_supply = fit_poly3(x_sup_tr, y_sup_tr, x_sup_tr)
-            else:
-                r2_supply, model_supply, poly_supply = 0, None, None
-
-            # 예측 기온 결정
-            pred_months = list(range(1, 13))
-            if has_sales_model:
-                monthly_avg_cool = train_sales.groupby("월")["검침기온"].mean()
-            elif has_supply_model:
-                monthly_avg_cool = train_supply.groupby("월")["검침기온"].mean()
-            else:
-                st.error("학습 데이터가 부족합니다."); st.stop()
-
-            if temp_input_mode == "업로드한 예상기온 사용" and forecast_temp_df is not None:
-                fc_yr = forecast_temp_df[forecast_temp_df["연"] == cooling_pred_year]
-                pred_temps = []
-                for m in pred_months:
-                    row = fc_yr[fc_yr["월"] == m]
-                    pred_temps.append(float(row.iloc[0]["예상기온"]) if not row.empty
-                                      else monthly_avg_cool.get(m, np.nan))
-            else:
-                pred_temps = [monthly_avg_cool.get(m, np.nan) for m in pred_months]
-
-            x_pred = np.array(pred_temps, dtype=float)
-            valid_mask = ~np.isnan(x_pred)
-            x_valid = x_pred[valid_mask]
-            valid_months = [m for m, v in zip(pred_months, valid_mask) if v]
-
-            if valid_mask.sum() == 0:
-                st.error("예측 기온이 모두 비어있습니다."); st.stop()
-
-            # Method A: 기간평균 예측
-            pred_sales_A = pred_supply_A = None
-            if has_sales_model:
-                yp, _, _, _ = fit_poly3(x_s_tr, y_s_tr, x_valid)
-                pred_sales_A = np.clip(np.rint(yp).astype(np.int64), 0, None)
-            if has_supply_model:
-                yp, _, _, _ = fit_poly3(x_sup_tr, y_sup_tr, x_valid)
-                pred_supply_A = np.clip(np.rint(yp).astype(np.int64), 0, None)
-
-            # Method B: 일별합산 예측
-            pred_sales_B = []
-            pred_supply_B = []
-            for m in valid_months:
-                dtk = daily_temps_dict.get((cooling_pred_year, m))
-                if dtk is None:
-                    # 과거 학습기간에서 해당 월 일별기온 평균 사용
-                    fallback_temps = []
-                    for yr in cooling_train_years:
-                        dt = daily_temps_dict.get((yr, m))
-                        if dt is not None:
-                            fallback_temps.append(dt)
-                    if fallback_temps:
-                        max_len = max(len(t) for t in fallback_temps)
-                        padded = [np.pad(t, (0, max_len - len(t)), constant_values=np.nan) for t in fallback_temps]
-                        dtk = np.nanmean(np.array(padded), axis=0)
-                        dtk = dtk[~np.isnan(dtk)]
-                if dtk is not None and len(dtk) > 0:
-                    if has_sales_model:
-                        pred_sales_B.append(predict_daily_avg(model_sales, poly_sales, dtk))
-                    else:
-                        pred_sales_B.append(np.nan)
-                    if has_supply_model:
-                        pred_supply_B.append(predict_daily_avg(model_supply, poly_supply, dtk))
-                    else:
-                        pred_supply_B.append(np.nan)
-                else:
-                    pred_sales_B.append(np.nan)
-                    pred_supply_B.append(np.nan)
-            pred_sales_B = np.array(pred_sales_B)
-            pred_supply_B = np.array(pred_supply_B)
-
-            # 실적 데이터 (비교용)
-            actual_sales_yr = sales_merged[sales_merged["연"] == cooling_pred_year]
-            actual_supply_yr = supply_merged[supply_merged["연"] == cooling_pred_year] if not supply_merged.empty else pd.DataFrame()
-
-            # ═══════════════════════════════════
-            # 서브탭 표시
-            # ═══════════════════════════════════
-            sub1, sub2, sub3, sub4 = st.tabs([
-                "1️⃣ 공급량 기반 예측",
-                "2️⃣ 판매량 기반 예측",
-                "3️⃣ 실적 vs 예측 비교",
-                "4️⃣ 기온방식 비교 (평균 vs 일별)",
-            ])
-
-            # ─────────────────────────────────
-            # SUB 1: 공급량 기반 예측
-            # ─────────────────────────────────
-            with sub1:
-                if not has_supply_model:
-                    st.warning("공급량 학습 데이터가 부족하여 예측할 수 없습니다.")
-                else:
-                    st.markdown(f'<div class="sub">📦 {supply_product} — 공급량 기반 Poly-3</div>',
-                                unsafe_allow_html=True)
-                    st.caption(f"Train R² = {r2_supply:.4f} | {poly_eq_text(model_supply)}")
-
-                    # 결과 테이블
-                    tbl_sup = pd.DataFrame({"월": [f"{m}월" for m in pred_months]})
-                    tbl_sup["검침기온"] = pred_temps
-                    tbl_sup["예측_공급량"] = np.nan
-                    j = 0
-                    for i, v in enumerate(valid_mask):
-                        if v:
-                            tbl_sup.loc[i, "예측_공급량"] = int(pred_supply_A[j])
-                            j += 1
-
-                    if not actual_supply_yr.empty:
-                        act_s = actual_supply_yr.set_index("월")[supply_product]
-                        tbl_sup["실적_공급량"] = [act_s.get(m, np.nan) for m in pred_months]
-                        tbl_sup["차이"] = pd.to_numeric(tbl_sup["예측_공급량"], errors="coerce") - pd.to_numeric(tbl_sup["실적_공급량"], errors="coerce")
-
-                    sum_row = {"월": "합계", "검침기온": ""}
-                    for c in tbl_sup.columns:
-                        if c not in ["월", "검침기온"]:
-                            sum_row[c] = pd.to_numeric(tbl_sup[c], errors="coerce").sum()
-                    tbl_sup_full = pd.concat([tbl_sup, pd.DataFrame([sum_row])], ignore_index=True)
-                    int_c = [c for c in tbl_sup_full.columns if c not in ["월", "검침기온"]]
-                    render_centered_table(tbl_sup_full, float_cols=["검침기온"], int_cols=int_c)
-
-                    # 라인 차트
-                    traces = []
-                    for y in sorted(supply_years)[-3:]:
-                        act = train_supply[train_supply["연"] == y].sort_values("월")
-                        if not act.empty:
-                            traces.append(dict(
-                                x=[f"{int(m)}월" for m in act["월"]], y=act[supply_product].values,
-                                name=f"{y} 실적", color=None, customdata=np.round(act["검침기온"].values, 1),
-                                hover_extra="<br>검침기온 %{customdata:.1f}℃"))
-                    traces.append(dict(
-                        x=[f"{m}월" for m in valid_months], y=pred_supply_A,
-                        name=f"예측 {cooling_pred_year}", color="#e8501a", dash="dash",
-                        customdata=np.round(x_valid, 1),
-                        hover_extra="<br>검침기온 %{customdata:.1f}℃"))
-                    colors_cycle = ["#2563eb", "#06b6d4", "#f59e0b", "#8b5cf6"]
-                    for i, t in enumerate(traces):
-                        if t.get("color") is None:
-                            t["color"] = colors_cycle[i % len(colors_cycle)]
-
-                    fig_sup = _make_line_chart(traces,
-                        f"{supply_product} 공급량 — 실적 vs 예측 (R²={r2_supply:.4f})",
-                        "월", "공급량 (MJ)")
-                    st.plotly_chart(fig_sup, use_container_width=True,
-                                    config=dict(scrollZoom=True, displaylogo=False))
-
-                    with st.expander(f"🔎 {supply_product} — 검침기온↔공급량 산점도"):
-                        fig_sc = _make_scatter_chart(x_sup_tr, y_sup_tr,
-                            f"{supply_product} — 검침기온 vs 공급량", "검침기온 (℃)", "공급량 (MJ)", r2_supply)
-                        st.plotly_chart(fig_sc, use_container_width=True,
-                                        config=dict(scrollZoom=True, displaylogo=False))
-
-            # ─────────────────────────────────
-            # SUB 2: 판매량 기반 예측
-            # ─────────────────────────────────
-            with sub2:
-                if not has_sales_model:
-                    st.warning("판매량 학습 데이터가 부족하여 예측할 수 없습니다.")
-                else:
-                    st.markdown(f'<div class="sub">📦 {cooling_col} — 판매량 기반 Poly-3</div>',
-                                unsafe_allow_html=True)
-                    st.caption(f"Train R² = {r2_sales:.4f} | {poly_eq_text(model_sales)}")
-
-                    tbl_sal = pd.DataFrame({"월": [f"{m}월" for m in pred_months]})
-                    tbl_sal["검침기온"] = pred_temps
-                    tbl_sal["예측_판매량"] = np.nan
-                    j = 0
-                    for i, v in enumerate(valid_mask):
-                        if v:
-                            tbl_sal.loc[i, "예측_판매량"] = int(pred_sales_A[j])
-                            j += 1
-
-                    if not actual_sales_yr.empty:
-                        act_s = actual_sales_yr.set_index("월")[cooling_col]
-                        tbl_sal["실적_판매량"] = [act_s.get(m, np.nan) for m in pred_months]
-                        tbl_sal["차이"] = pd.to_numeric(tbl_sal["예측_판매량"], errors="coerce") - pd.to_numeric(tbl_sal["실적_판매량"], errors="coerce")
-
-                    sum_row = {"월": "합계", "검침기온": ""}
-                    for c in tbl_sal.columns:
-                        if c not in ["월", "검침기온"]:
-                            sum_row[c] = pd.to_numeric(tbl_sal[c], errors="coerce").sum()
-                    tbl_sal_full = pd.concat([tbl_sal, pd.DataFrame([sum_row])], ignore_index=True)
-                    int_c = [c for c in tbl_sal_full.columns if c not in ["월", "검침기온"]]
-                    render_centered_table(tbl_sal_full, float_cols=["검침기온"], int_cols=int_c)
-
-                    traces = []
-                    for y in sorted(sales_years)[-3:]:
-                        act = train_sales[train_sales["연"] == y].sort_values("월")
-                        if not act.empty:
-                            traces.append(dict(
-                                x=[f"{int(m)}월" for m in act["월"]], y=act[cooling_col].values,
-                                name=f"{y} 실적", color=None,
-                                customdata=np.round(act["검침기온"].values, 1),
-                                hover_extra="<br>검침기온 %{customdata:.1f}℃"))
-                    traces.append(dict(
-                        x=[f"{m}월" for m in valid_months], y=pred_sales_A,
-                        name=f"예측 {cooling_pred_year}", color="#e8501a", dash="dash",
-                        customdata=np.round(x_valid, 1),
-                        hover_extra="<br>검침기온 %{customdata:.1f}℃"))
-                    colors_cycle = ["#2563eb", "#06b6d4", "#f59e0b", "#8b5cf6"]
-                    for i, t in enumerate(traces):
-                        if t.get("color") is None:
-                            t["color"] = colors_cycle[i % len(colors_cycle)]
-
-                    fig_sal = _make_line_chart(traces,
-                        f"{cooling_col} 판매량 — 실적 vs 예측 (R²={r2_sales:.4f})",
-                        "월", "판매량 (GJ)")
-                    st.plotly_chart(fig_sal, use_container_width=True,
-                                    config=dict(scrollZoom=True, displaylogo=False))
-
-                    with st.expander(f"🔎 {cooling_col} — 검침기온↔판매량 산점도"):
-                        fig_sc = _make_scatter_chart(x_s_tr, y_s_tr,
-                            f"{cooling_col} — 검침기온 vs 판매량", "검침기온 (℃)", "판매량 (GJ)", r2_sales)
-                        st.plotly_chart(fig_sc, use_container_width=True,
-                                        config=dict(scrollZoom=True, displaylogo=False))
-
-            # ─────────────────────────────────
-            # SUB 3: 실적 vs 예측 비교
-            # ─────────────────────────────────
-            with sub3:
-                st.markdown(f'<div class="sub">📊 {cooling_pred_year}년 — 공급량 vs 판매량 예측 비교</div>',
-                            unsafe_allow_html=True)
-
-                # 비교 테이블
-                cmp = pd.DataFrame({"월": [f"{m}월" for m in pred_months]})
-                cmp["검침기온"] = pred_temps
-
-                if has_supply_model:
-                    col_sp = "예측_공급량"
-                    cmp[col_sp] = np.nan
-                    j = 0
-                    for i, v in enumerate(valid_mask):
-                        if v:
-                            cmp.loc[i, col_sp] = int(pred_supply_A[j]); j += 1
-
-                if has_sales_model:
-                    col_sl = "예측_판매량"
-                    cmp[col_sl] = np.nan
-                    j = 0
-                    for i, v in enumerate(valid_mask):
-                        if v:
-                            cmp.loc[i, col_sl] = int(pred_sales_A[j]); j += 1
-
-                # 실적 열
-                if not actual_supply_yr.empty and has_supply_model:
-                    act_sup = actual_supply_yr.set_index("월")[supply_product]
-                    cmp["실적_공급량"] = [act_sup.get(m, np.nan) for m in pred_months]
-                if not actual_sales_yr.empty and has_sales_model:
-                    act_sal = actual_sales_yr.set_index("월")[cooling_col]
-                    cmp["실적_판매량"] = [act_sal.get(m, np.nan) for m in pred_months]
-
-                sum_row = {"월": "합계", "검침기온": ""}
-                for c in cmp.columns:
-                    if c not in ["월", "검침기온"]:
-                        sum_row[c] = pd.to_numeric(cmp[c], errors="coerce").sum()
-                cmp_full = pd.concat([cmp, pd.DataFrame([sum_row])], ignore_index=True)
-                int_c = [c for c in cmp_full.columns if c not in ["월", "검침기온"]]
-                render_centered_table(cmp_full, float_cols=["검침기온"], int_cols=int_c)
-
-                # 비교 라인 차트
-                traces = []
-                if has_supply_model:
-                    traces.append(dict(x=[f"{m}월" for m in valid_months], y=pred_supply_A,
-                        name="예측 공급량", color="#2563eb", dash="dash"))
-                if has_sales_model:
-                    traces.append(dict(x=[f"{m}월" for m in valid_months], y=pred_sales_A,
-                        name="예측 판매량", color="#e8501a", dash="dash"))
-                if not actual_supply_yr.empty:
-                    act = actual_supply_yr.sort_values("월")
-                    traces.append(dict(x=[f"{int(m)}월" for m in act["월"]],
-                        y=act[supply_product].values,
-                        name="실적 공급량", color="#2563eb"))
-                if not actual_sales_yr.empty:
-                    act = actual_sales_yr.sort_values("월")
-                    traces.append(dict(x=[f"{int(m)}월" for m in act["월"]],
-                        y=act[cooling_col].values,
-                        name="실적 판매량", color="#16a34a"))
-
-                if traces:
-                    fig_cmp = _make_line_chart(traces,
-                        f"{cooling_pred_year}년 — 공급량 vs 판매량 비교", "월", "값 (MJ/GJ)", 450)
-                    st.plotly_chart(fig_cmp, use_container_width=True,
-                                    config=dict(scrollZoom=True, displaylogo=False))
-
-                # R² 요약 카드
-                st.markdown("---")
-                st.markdown('<div class="sub">📌 모델 정확도 요약</div>', unsafe_allow_html=True)
-
-                def _calc_r2_vs_actual(predictions, actuals_df, target_col, valid_m):
-                    """예측 vs 실적 R² 계산"""
-                    if predictions is None or actuals_df.empty:
-                        return np.nan
-                    act_by_m = actuals_df.set_index("월")[target_col]
-                    pairs = []
-                    for i, m in enumerate(valid_m):
-                        a = act_by_m.get(m, np.nan)
-                        if not np.isnan(a) and i < len(predictions):
-                            pairs.append((predictions[i], float(a)))
-                    if len(pairs) < 3:
-                        return np.nan
-                    pred_arr = np.array([p[0] for p in pairs])
-                    act_arr  = np.array([p[1] for p in pairs])
-                    ss_res = np.sum((act_arr - pred_arr)**2)
-                    ss_tot = np.sum((act_arr - np.mean(act_arr))**2)
-                    return 1 - ss_res / ss_tot if ss_tot > 0 else np.nan
-
-                r2_sup_actual = _calc_r2_vs_actual(pred_supply_A, actual_supply_yr, supply_product, valid_months) if has_supply_model else np.nan
-                r2_sal_actual = _calc_r2_vs_actual(pred_sales_A, actual_sales_yr, cooling_col, valid_months) if has_sales_model else np.nan
-
-                cc1, cc2 = st.columns(2)
-                with cc1:
-                    if has_supply_model:
-                        r2_txt = f"{r2_sup_actual:.4f}" if not np.isnan(r2_sup_actual) else "실적 없음"
-                        st.metric("공급량 기반 모델", f"Train R² = {r2_supply:.4f}",
-                                  delta=f"Pred R² = {r2_txt}")
-                with cc2:
-                    if has_sales_model:
-                        r2_txt = f"{r2_sal_actual:.4f}" if not np.isnan(r2_sal_actual) else "실적 없음"
-                        st.metric("판매량 기반 모델", f"Train R² = {r2_sales:.4f}",
-                                  delta=f"Pred R² = {r2_txt}")
-
-            # ─────────────────────────────────
-            # SUB 4: 기온방식 비교
-            # ─────────────────────────────────
-            with sub4:
-                st.markdown("""
-                <div class="info-box">
-                <b>방식 A (기간평균)</b>: 검침기간(~30일) 기온을 평균 → 하나의 기온값으로 Poly-3 예측<br>
-                <b>방식 B (일별합산)</b>: 검침기간 각 일별 기온으로 Poly-3 예측 → 일별 예측값의 평균<br>
-                <b>원리</b>: Poly-3는 비선형(3차)이므로 f(평균x) ≠ 평균(f(x)). 기온 변동이 클수록 차이가 발생합니다.
-                </div>
-                """, unsafe_allow_html=True)
-
-                # 학습 데이터 기간에 대해 두 방식의 예측을 비교
-                st.markdown('<div class="sub">📊 학습기간 역예측(back-test) R² 비교</div>',
-                            unsafe_allow_html=True)
-                st.caption("학습에 사용된 각 월에 대해 방식A·B 예측값을 계산하고, 실제값과 비교합니다.")
-
-                comparison_rows = []
-
-                # 판매량 모델
-                if has_sales_model:
-                    preds_A_sales = []
-                    preds_B_sales = []
-                    actuals_sales = []
-                    for _, row in train_sales.iterrows():
-                        y_r, m_r = int(row["연"]), int(row["월"])
-                        actual_v = float(row[cooling_col])
-                        # Method A
-                        avg_t = row["검침기온"]
-                        pA = model_sales.predict(poly_sales.transform([[avg_t]]))[0]
-                        # Method B
-                        dtk = daily_temps_dict.get((y_r, m_r))
-                        if dtk is not None and len(dtk) > 0:
-                            pB = predict_daily_avg(model_sales, poly_sales, dtk)
-                        else:
-                            pB = pA  # fallback
-                        preds_A_sales.append(pA)
-                        preds_B_sales.append(pB)
-                        actuals_sales.append(actual_v)
-
-                    pA_arr = np.array(preds_A_sales)
-                    pB_arr = np.array(preds_B_sales)
-                    act_arr = np.array(actuals_sales)
-
-                    def _r2(pred, act):
-                        ss_res = np.sum((act - pred)**2)
-                        ss_tot = np.sum((act - np.mean(act))**2)
-                        return 1 - ss_res / ss_tot if ss_tot > 0 else np.nan
-
-                    r2_A_sales = _r2(pA_arr, act_arr)
-                    r2_B_sales = _r2(pB_arr, act_arr)
-                    mae_A_sales = np.mean(np.abs(act_arr - pA_arr))
-                    mae_B_sales = np.mean(np.abs(act_arr - pB_arr))
-
-                    comparison_rows.append({
-                        "모델": "판매량 기반",
-                        "방식A R²": f"{r2_A_sales:.4f}",
-                        "방식B R²": f"{r2_B_sales:.4f}",
-                        "방식A MAE": f"{mae_A_sales:,.0f}",
-                        "방식B MAE": f"{mae_B_sales:,.0f}",
-                        "유리한 방식": "방식B (일별)" if r2_B_sales > r2_A_sales else "방식A (평균)",
-                    })
-
-                # 공급량 모델
-                if has_supply_model:
-                    preds_A_sup = []
-                    preds_B_sup = []
-                    actuals_sup = []
-                    for _, row in train_supply.iterrows():
-                        y_r, m_r = int(row["연"]), int(row["월"])
-                        actual_v = float(row[supply_product])
-                        avg_t = row["검침기온"]
-                        pA = model_supply.predict(poly_supply.transform([[avg_t]]))[0]
-                        dtk = daily_temps_dict.get((y_r, m_r))
-                        if dtk is not None and len(dtk) > 0:
-                            pB = predict_daily_avg(model_supply, poly_supply, dtk)
-                        else:
-                            pB = pA
-                        preds_A_sup.append(pA)
-                        preds_B_sup.append(pB)
-                        actuals_sup.append(actual_v)
-
-                    pA_arr = np.array(preds_A_sup)
-                    pB_arr = np.array(preds_B_sup)
-                    act_arr = np.array(actuals_sup)
-
-                    r2_A_sup = _r2(pA_arr, act_arr)
-                    r2_B_sup = _r2(pB_arr, act_arr)
-                    mae_A_sup = np.mean(np.abs(act_arr - pA_arr))
-                    mae_B_sup = np.mean(np.abs(act_arr - pB_arr))
-
-                    comparison_rows.append({
-                        "모델": "공급량 기반",
-                        "방식A R²": f"{r2_A_sup:.4f}",
-                        "방식B R²": f"{r2_B_sup:.4f}",
-                        "방식A MAE": f"{mae_A_sup:,.0f}",
-                        "방식B MAE": f"{mae_B_sup:,.0f}",
-                        "유리한 방식": "방식B (일별)" if r2_B_sup > r2_A_sup else "방식A (평균)",
-                    })
-
-                if comparison_rows:
-                    cmp_df = pd.DataFrame(comparison_rows)
-                    render_centered_table(cmp_df)
-                else:
-                    st.warning("비교할 모델이 없습니다.")
-
-                # 월별 상세 차이
-                st.markdown("---")
-                st.markdown(f'<div class="sub">📋 {cooling_pred_year}년 월별 방식 비교</div>',
-                            unsafe_allow_html=True)
-                st.caption("방식A(기간평균)와 방식B(일별합산)의 월별 예측값 차이")
-
-                detail = pd.DataFrame({"월": [f"{m}월" for m in valid_months]})
-                if has_supply_model and pred_supply_A is not None:
-                    detail["공급량_A(평균)"] = pred_supply_A
-                    clean_B = np.where(np.isnan(pred_supply_B[:len(valid_months)]), 0,
-                                       pred_supply_B[:len(valid_months)])
-                    detail["공급량_B(일별)"] = np.clip(np.rint(clean_B).astype(np.int64), 0, None)
-                    detail["공급량_차이(B-A)"] = detail["공급량_B(일별)"].values - pred_supply_A.astype(np.int64)
-
-                if has_sales_model and pred_sales_A is not None:
-                    detail["판매량_A(평균)"] = pred_sales_A
-                    clean_B = np.where(np.isnan(pred_sales_B[:len(valid_months)]), 0,
-                                       pred_sales_B[:len(valid_months)])
-                    detail["판매량_B(일별)"] = np.clip(np.rint(clean_B).astype(np.int64), 0, None)
-                    detail["판매량_차이(B-A)"] = detail["판매량_B(일별)"].values - pred_sales_A.astype(np.int64)
-
-                sum_row = {"월": "합계"}
-                for c in detail.columns:
-                    if c != "월":
-                        sum_row[c] = pd.to_numeric(detail[c], errors="coerce").sum()
-                detail_full = pd.concat([detail, pd.DataFrame([sum_row])], ignore_index=True)
-                int_c = [c for c in detail_full.columns if c != "월"]
-                render_centered_table(detail_full, int_cols=int_c)
-
-                # 방식 비교 차트 (판매량 기준)
-                if has_sales_model and pred_sales_A is not None:
-                    st.markdown("---")
-                    traces = [
-                        dict(x=[f"{m}월" for m in valid_months], y=pred_sales_A,
-                             name="방식A (기간평균)", color="#2563eb"),
-                    ]
-                    clean_B = np.where(np.isnan(pred_sales_B[:len(valid_months)]), 0,
-                                       pred_sales_B[:len(valid_months)])
-                    traces.append(
-                        dict(x=[f"{m}월" for m in valid_months],
-                             y=np.clip(np.rint(clean_B).astype(np.int64), 0, None),
-                             name="방식B (일별합산)", color="#16a34a", dash="dashdot"))
-                    if not actual_sales_yr.empty:
-                        act = actual_sales_yr.sort_values("월")
-                        traces.append(dict(x=[f"{int(m)}월" for m in act["월"]],
-                            y=act[cooling_col].values,
-                            name="실적", color="#f59e0b", width=3))
-
-                    fig_method = _make_line_chart(traces,
-                        f"판매량 기온방식 비교 — {cooling_pred_year}년",
-                        "월", "판매량", 420)
-                    st.plotly_chart(fig_method, use_container_width=True,
-                                    config=dict(scrollZoom=True, displaylogo=False))
-
-            # ── 엑셀 다운로드 ──
-            st.markdown("---")
-            buf = BytesIO()
-            with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-                if has_supply_model:
-                    tbl_sup_full.to_excel(writer, sheet_name="공급량기반_예측", index=False)
-                if has_sales_model:
-                    tbl_sal_full.to_excel(writer, sheet_name="판매량기반_예측", index=False)
-                if comparison_rows:
-                    cmp_df.to_excel(writer, sheet_name="기온방식비교", index=False)
-                detail_full.to_excel(writer, sheet_name="월별방식비교", index=False)
-            st.download_button("⬇️ 냉난방공조용 예측 엑셀 다운로드", data=buf.getvalue(),
-                file_name=f"냉난방공조용_예측_{cooling_pred_year}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        render_cooling_analysis()
 
 
 def _parse_uploaded_temp(uploaded_file):
