@@ -1644,6 +1644,14 @@ def main():
                     tbl["예상기온"] = fut_df["예상기온"] + delta
                     tbl[prod] = y_pred
                     scenario_tables[sname] = tbl
+
+                # 단순 N년 평균 공급량("시즈널 네이브" 베이스라인) — '학습 기온 선택' 연도의
+                # 실제 공급량(prod)을 월별로 그대로 평균낸 값. 기온 회귀식 없이, "최근 몇 년간
+                # 그 달엔 대략 이만큼 썼다"만 반영하는 가장 단순한 비교 기준선.
+                naive_label = f"단순{len(temp_avg_years)}년평균"
+                naive_monthly = temp_basis_data.groupby("월")[prod].mean()
+                naive_vals_by_month = {m: naive_monthly.get(m, np.nan) for m in range(1, 13)}
+
                 fig = go.Figure()
                 for y in sorted(years_all)[-3:]:
                     act = merged[merged["연"] == y][["월", prod, "월평균기온"]].sort_values("월")
@@ -1661,6 +1669,14 @@ def main():
                         customdata=np.round(row["예상기온"].values, 2),
                         mode="lines", name=f"예측(Normal) {y}", line=dict(dash="dash"),
                         hovertemplate="%{x} %{y:,.0f} MJ<br>기온 %{customdata:.1f}℃<extra></extra>"))
+                fig.add_trace(go.Scatter(
+                    x=[f"{m}월" for m in range(1, 13)],
+                    y=[naive_vals_by_month[m] for m in range(1, 13)],
+                    mode="lines+markers",
+                    name=f"{naive_label}({min(temp_avg_years)}~{max(temp_avg_years)})",
+                    line=dict(dash="dot", color="#7c3aed", width=2.5),
+                    marker=dict(symbol="diamond", size=7),
+                    hovertemplate="%{x} %{y:,.0f} MJ<extra></extra>"))
                 fig.update_layout(**CHART_LAYOUT)
                 fig.update_layout(
                     title=f"{prod} — Poly-3 예측 (Train R²={r2_train:.4f})",
@@ -1670,16 +1686,21 @@ def main():
                                 xanchor="center", x=0.5, font=dict(size=10)))
                 st.plotly_chart(fig, use_container_width=True,
                                 config=dict(scrollZoom=True, displaylogo=False))
+                st.caption(f"🟣 점선(다이아몬드)이 '{naive_label}' — 기온 회귀식 없이 최근 "
+                          f"{len(temp_avg_years)}개년({', '.join(str(y) for y in sorted(temp_avg_years))}) "
+                          "실적을 월별로 그대로 평균낸 참고선입니다.")
                 st.markdown(f'<div class="sub">📋 {prod} — 시나리오별 월별 예측</div>',
                             unsafe_allow_html=True)
                 compare_tbl = fut_df[["연", "월"]].copy()
                 for sname in scenarios:
                     compare_tbl[sname] = scenario_tables[sname][prod].values
+                compare_tbl[naive_label] = compare_tbl["월"].map(naive_vals_by_month)
                 sum_row = {"연": "합계", "월": ""}
                 for sname in scenarios:
                     sum_row[sname] = compare_tbl[sname].sum()
+                sum_row[naive_label] = compare_tbl[naive_label].sum()
                 compare_full = pd.concat([compare_tbl, pd.DataFrame([sum_row])], ignore_index=True)
-                render_centered_table(compare_full, int_cols=list(scenarios.keys()))
+                render_centered_table(compare_full, int_cols=list(scenarios.keys()) + [naive_label])
                 with st.expander(f"🔎 {prod} — 기온↔공급량 산점도 (학습 데이터)"):
                     fig_sc = _make_scatter_chart(x_train, y_train,
                         f"{prod} — 기온 vs 공급량", "기온 (℃)", "공급량 (MJ)", r2_train)
