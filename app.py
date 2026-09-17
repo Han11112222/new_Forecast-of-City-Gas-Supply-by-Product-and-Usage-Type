@@ -1552,11 +1552,16 @@ def main():
                 key="train_years")
 
         st.caption("👆 학습 연도: Poly-3 모델(기온↔공급량 관계식)을 학습할 때 사용할 연도")
+        _max_temp_year = max(years_all)
+        default_temp_years = [y for y in (_max_temp_year, _max_temp_year - 1, _max_temp_year - 2)
+                              if y in years_all]
+        if not default_temp_years:  # 혹시라도 y, y-1, y-2가 데이터에 하나도 없으면 안전하게 폴백
+            default_temp_years = years_all[-3:] if len(years_all) >= 3 else years_all
         temp_avg_years = st.multiselect(
             "🌡️ 학습 기온 선택 (예상기온 산출 기준 연도 · 기본값: 최근 3년 평균)",
             options=years_all,
-            default=years_all[-3:] if len(years_all) >= 3 else years_all,
-            key="temp_avg_years")
+            default=default_temp_years,
+            key="temp_avg_years_v2")
         st.caption("👆 미래(예측 기간)의 '예상기온'을 계산할 때 평균낼 연도. 학습 연도와 별개로 원하는 연도만 골라 "
                    "월별 평균기온을 낼 수 있습니다 (예: 최근 3년, 5년, 혹은 특정 연도들만).")
 
