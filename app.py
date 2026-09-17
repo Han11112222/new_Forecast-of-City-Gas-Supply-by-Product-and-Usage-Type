@@ -301,13 +301,19 @@ def merge_supply_and_temp(supply_df, temp_monthly):
 def fit_poly3(x_train, y_train, x_pred):
     m = (~np.isnan(x_train)) & (~np.isnan(y_train))
     x_tr, y_tr = x_train[m], y_train[m]
+    x_pred = np.asarray(x_pred, dtype=float)
     if len(x_tr) < 4:
-        return np.full_like(x_pred, np.nan), 0.0, None, None
+        return np.full_like(x_pred, np.nan, dtype=float), 0.0, None, None
     poly = PolynomialFeatures(degree=3, include_bias=False)
     Xtr = poly.fit_transform(x_tr.reshape(-1, 1))
     model = LinearRegression().fit(Xtr, y_tr)
     r2 = model.score(Xtr, y_tr)
-    y_pred = model.predict(poly.transform(x_pred.reshape(-1, 1)))
+    # x_pred에 NaN이 섞여 있어도 sklearn이 전체를 거부하며 죽지 않도록,
+    # 유효한 값만 모델에 넣고 나머지는 NaN으로 채운다.
+    y_pred = np.full_like(x_pred, np.nan, dtype=float)
+    valid = ~np.isnan(x_pred)
+    if valid.any():
+        y_pred[valid] = model.predict(poly.transform(x_pred[valid].reshape(-1, 1)))
     return y_pred, r2, model, poly
 
 
@@ -1605,10 +1611,18 @@ def main():
             else:
                 fut_df["예상기온"] = fut_df["월"].map(monthly_avg)
             if fut_df["예상기온"].isna().any():
-                st.warning("일부 월의 예상기온을 결정하지 못했습니다.")
-                overall_avg = temp_basis_data.groupby("월")["월평균기온"].mean()
+                st.warning("일부 월은 '학습 기온 선택' 연도만으로는 예상기온을 정하지 못해, "
+                          "전체 연도 평균으로 대신 채웠습니다.")
+                # temp_basis_data(사용자가 고른 연도)에 없는 월은, 그 연도들만으론 채울 수 없으므로
+                # merged 전체(모든 연도)의 월별 평균으로 2차 폴백한다.
+                overall_avg = merged.groupby("월")["월평균기온"].mean()
                 miss = fut_df["예상기온"].isna()
                 fut_df.loc[miss, "예상기온"] = fut_df.loc[miss, "월"].map(overall_avg)
+            if fut_df["예상기온"].isna().any():
+                # merged 전체에도 없는 월(이론상 거의 없음)은 마지막으로 전체 평균 1개 값으로 채운다.
+                st.warning("일부 월은 참고할 기온 데이터가 전혀 없어, 전체 평균기온 1개 값으로 대체했습니다.")
+                fallback_single = merged["월평균기온"].mean()
+                fut_df["예상기온"] = fut_df["예상기온"].fillna(fallback_single)
             st.caption(f"🌡️ 예상기온 산출 기준: {', '.join(str(y) for y in sorted(temp_avg_years))}년 월별 평균")
             scenarios = {"Normal": d_norm, "Best": d_best, "Conservative": d_cons}
             for prod in pred_products:
