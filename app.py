@@ -1545,6 +1545,15 @@ def main():
                 default=years_all[-3:] if len(years_all) >= 3 else years_all,
                 key="train_years")
 
+        st.caption("👆 학습 연도: Poly-3 모델(기온↔공급량 관계식)을 학습할 때 사용할 연도")
+        temp_avg_years = st.multiselect(
+            "🌡️ 학습 기온 선택 (예상기온 산출 기준 연도 · 기본값: 최근 3년 평균)",
+            options=years_all,
+            default=years_all[-3:] if len(years_all) >= 3 else years_all,
+            key="temp_avg_years")
+        st.caption("👆 미래(예측 기간)의 '예상기온'을 계산할 때 평균낼 연도. 학습 연도와 별개로 원하는 연도만 골라 "
+                   "월별 평균기온을 낼 수 있습니다 (예: 최근 3년, 5년, 혹은 특정 연도들만).")
+
         st.markdown('<div class="sub">🌡️ 시나리오 Δ°C (예상기온 보정)</div>', unsafe_allow_html=True)
         sc1, sc2, sc3 = st.columns(3)
         with sc1:
@@ -1570,9 +1579,14 @@ def main():
                 st.warning("예측할 상품을 선택해주세요."); st.stop()
             if not train_years:
                 st.warning("학습 연도를 선택해주세요."); st.stop()
+            if not temp_avg_years:
+                st.warning("학습 기온(예상기온 산출 기준) 연도를 선택해주세요."); st.stop()
             train_data = merged[merged["연"].isin(train_years)]
             if len(train_data) < 12:
                 st.error("학습 데이터가 12건 미만입니다. 학습 연도를 추가해주세요."); st.stop()
+            temp_basis_data = merged[merged["연"].isin(temp_avg_years)]
+            if temp_basis_data.empty:
+                st.error("학습 기온 연도에 해당하는 데이터가 없습니다. 다른 연도를 선택해주세요."); st.stop()
             x_train = train_data["월평균기온"].values.astype(float)
             f_start = pd.Timestamp(year=pred_start_y, month=pred_start_m, day=1)
             f_end   = pd.Timestamp(year=pred_end_y,   month=pred_end_m,   day=1)
@@ -1580,7 +1594,8 @@ def main():
                 st.error("예측 종료가 시작보다 앞입니다."); st.stop()
             fut_months = pd.date_range(start=f_start, end=f_end, freq="MS")
             fut_df = pd.DataFrame({"연": fut_months.year, "월": fut_months.month})
-            monthly_avg = train_data.groupby("월")["월평균기온"].mean()
+            # 예상기온 산출 기준: 학습 연도가 아니라 '학습 기온 선택'에서 고른 연도들의 월별 평균
+            monthly_avg = temp_basis_data.groupby("월")["월평균기온"].mean()
             if forecast_temp_df is not None:
                 fut_df = fut_df.merge(forecast_temp_df[["연", "월", "예상기온"]],
                     on=["연", "월"], how="left")
@@ -1591,9 +1606,10 @@ def main():
                 fut_df["예상기온"] = fut_df["월"].map(monthly_avg)
             if fut_df["예상기온"].isna().any():
                 st.warning("일부 월의 예상기온을 결정하지 못했습니다.")
-                overall_avg = train_data.groupby("월")["월평균기온"].mean()
+                overall_avg = temp_basis_data.groupby("월")["월평균기온"].mean()
                 miss = fut_df["예상기온"].isna()
                 fut_df.loc[miss, "예상기온"] = fut_df.loc[miss, "월"].map(overall_avg)
+            st.caption(f"🌡️ 예상기온 산출 기준: {', '.join(str(y) for y in sorted(temp_avg_years))}년 월별 평균")
             scenarios = {"Normal": d_norm, "Best": d_best, "Conservative": d_cons}
             for prod in pred_products:
                 y_train = train_data[prod].values.astype(float)
