@@ -1383,6 +1383,7 @@ def main():
         st.markdown("### 📋 메뉴")
         menu_options = [
             "🎯 학습 데이터 기간 추천",
+            "🔍 공급량 예측 검증",
             "📈 공급량 예측",
             "🧊 판매량 예측 (냉방용)",
         ]
@@ -1537,9 +1538,135 @@ def main():
                            f"({best_poly['추천연도']}, R²={best_poly['R2']:.4f})")
 
     # ══════════════════════════════════════════
-    # ── TAB 2: 공급량 예측 ──
+    # ── TAB 2: 공급량 예측 검증 ──
     # ══════════════════════════════════════════
     elif selected_menu == menu_options[1]:
+        st.markdown("### 🔍 공급량 예측 검증")
+        st.markdown("""
+        <div class="info-box">
+        선택한 <b>학습 연도</b>로 Poly-3 모델을 만들고, <b>검증 연도</b>의 <u>실제 기온</u>을 넣어
+        예측값을 산출한 뒤 실적과 비교합니다.<br>
+        검증 R²/MAE가 양호하면 → 같은 설정으로 <b>📈 공급량 예측</b> 탭에서 미래 예측을 수행하세요.
+        </div>
+        """, unsafe_allow_html=True)
+
+        c1, c2 = st.columns(2)
+        with c1:
+            vf_products = st.multiselect("검증 상품 선택", options=available_products,
+                default=["개별난방용"] if "개별난방용" in available_products else available_products[:1],
+                key="vf_products")
+        with c2:
+            vf_train_years = st.multiselect("학습 연도 선택", options=years_all,
+                default=years_all[-3:] if len(years_all) >= 3 else years_all,
+                key="vf_train_years")
+
+        vf_eval_years = st.multiselect(
+            "🔎 검증 연도 선택 (실적이 있는 연도 — 예측 vs 실적 비교 대상)",
+            options=years_all,
+            default=years_all[-2:] if len(years_all) >= 2 else years_all,
+            key="vf_eval_years")
+        st.caption("👆 검증 연도의 실제 기온으로 예측한 뒤 실적과 비교합니다. "
+                   "학습 연도와 겹쳐도 되지만, 겹치지 않을수록 진짜 예측력을 평가할 수 있습니다.")
+
+        if not vf_products or not vf_train_years or not vf_eval_years:
+            st.warning("👈 상품, 학습 연도, 검증 연도를 모두 선택해주세요.")
+            st.stop()
+
+        train_data_vf = merged[merged["연"].isin(vf_train_years)]
+        eval_data_vf  = merged[merged["연"].isin(vf_eval_years)]
+
+        if len(train_data_vf) < 12:
+            st.error("학습 데이터가 12건 미만입니다. 학습 연도를 추가해주세요.")
+            st.stop()
+        if eval_data_vf.empty:
+            st.error("검증 연도에 해당하는 데이터가 없습니다.")
+            st.stop()
+
+        x_train_vf = train_data_vf["월평균기온"].values.astype(float)
+
+        # 단순N년평균 베이스라인용
+        naive_label = f"단순{len(vf_train_years)}년평균"
+        naive_by_product = {}
+        for prod in vf_products:
+            naive_by_product[prod] = train_data_vf.groupby("월")[prod].mean()
+
+        for prod in vf_products:
+            st.markdown(f'<div class="sub">📦 {prod}</div>', unsafe_allow_html=True)
+            y_train_vf = train_data_vf[prod].values.astype(float)
+            x_eval = eval_data_vf["월평균기온"].values.astype(float)
+            y_actual = eval_data_vf[prod].values.astype(float)
+
+            y_pred, r2_train, model_vf, poly_vf = fit_poly3(x_train_vf, y_train_vf, x_eval)
+
+            # 검증 R²/MAE
+            valid_mask = ~np.isnan(y_pred) & ~np.isnan(y_actual)
+            if valid_mask.sum() < 3:
+                st.warning(f"{prod}: 검증 가능한 데이터가 3건 미만입니다.")
+                continue
+            r2_eval = r2_score(y_actual[valid_mask], y_pred[valid_mask])
+            mae_eval = np.mean(np.abs(y_pred[valid_mask] - y_actual[valid_mask]))
+
+            # 단순평균 예측
+            naive_vals = eval_data_vf["월"].map(naive_by_product[prod]).values.astype(float)
+            valid_naive = ~np.isnan(naive_vals) & ~np.isnan(y_actual)
+            r2_naive = r2_score(y_actual[valid_naive], naive_vals[valid_naive]) if valid_naive.sum() >= 3 else np.nan
+            mae_naive = np.mean(np.abs(naive_vals[valid_naive] - y_actual[valid_naive])) if valid_naive.sum() >= 3 else np.nan
+
+            # R²/MAE 카드
+            mc1, mc2 = st.columns(2)
+            render_r2_mae_card(mc1, "Poly-3 예측", r2_eval, mae_eval)
+            render_r2_mae_card(mc2, f"{naive_label} (참고)", r2_naive, mae_naive)
+            st.caption(f"Poly-3 학습 R² = {r2_train:.4f} | {poly_eq_text(model_vf)}")
+
+            # 비교 DataFrame 구성
+            eval_comp = eval_data_vf[["연", "월"]].copy()
+            eval_comp["Year_Month"] = eval_comp.apply(
+                lambda r: f"{int(r['연'])}-{int(r['월']):02d}", axis=1)
+            eval_comp["실적"] = y_actual
+            eval_comp["Poly-3 예측"] = np.round(y_pred).astype(float)
+            eval_comp[naive_label] = np.round(naive_vals).astype(float)
+            eval_comp["월평균기온"] = x_eval
+
+            # 라인차트 — 실적 vs 예측 vs 단순평균
+            show_temp_vf = st.checkbox("🌡️ 실제기온 표시", key=f"vf_temp_{prod}")
+            chart_cols = ["실적", "Poly-3 예측", naive_label]
+            render_line_chart(eval_comp, "Year_Month", chart_cols, height=420,
+                              secondary_col="월평균기온" if show_temp_vf else None,
+                              secondary_name="실제기온(℃)")
+
+            # 월별 차이표
+            diff_df = _build_diff_table(eval_comp, "Year_Month", "실적",
+                                        ["실적", "Poly-3 예측", naive_label],
+                                        target_label="실적")
+            st.markdown("**🗂️ 월별 예측 vs 실적 비교**")
+            render_diff_table(diff_df, "Year_Month", target_col="실적",
+                              key_prefix=f"vf_monthly_{prod}")
+
+            # 연도별 요약
+            st.markdown("**📆 연도별 요약**")
+            render_yearly_diff_table(eval_comp, "실적",
+                                     ["실적", "Poly-3 예측", naive_label],
+                                     key_prefix=f"vf_yearly_{prod}",
+                                     target_label="실적")
+
+            # 산점도
+            with st.expander(f"🔎 {prod} — 기온↔공급량 산점도 (학습 데이터)"):
+                fig_sc = _make_scatter_chart(x_train_vf, y_train_vf,
+                    f"{prod} — 기온 vs 공급량", "기온 (℃)", "공급량 (MJ)", r2_train)
+                st.plotly_chart(fig_sc, use_container_width=True,
+                                config=dict(scrollZoom=True, displaylogo=False))
+
+            # CSV 다운로드
+            csv_vf = diff_df.to_csv(index=False).encode("utf-8-sig")
+            st.download_button(f"📥 {prod} 검증 결과 다운로드", data=csv_vf,
+                               file_name=f"공급량검증_{prod}.csv", mime="text/csv",
+                               key=f"dl_vf_{prod}")
+            st.markdown("---")
+
+    # ══════════════════════════════════════════
+    # ── TAB 3: 공급량 예측 ──
+    # ══════════════════════════════════════════
+    elif selected_menu == menu_options[2]:
         st.markdown("### 📈 공급량 예측 (Poly-3)")
         c1, c2 = st.columns(2)
         with c1:
@@ -1719,9 +1846,9 @@ def main():
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     # ══════════════════════════════════════════
-    # ── TAB 3: 판매량 예측 (냉방용) ──
+    # ── TAB 4: 판매량 예측 (냉방용) ──
     # ══════════════════════════════════════════
-    elif selected_menu == menu_options[2]:
+    elif selected_menu == menu_options[3]:
         render_cooling_analysis()
 
 
