@@ -1544,8 +1544,9 @@ def main():
         st.markdown("### 🔍 공급량 예측 검증")
         st.markdown("""
         <div class="info-box">
-        선택한 <b>학습 연도</b>로 Poly-3 모델을 만들고, <b>검증 연도</b>의 <u>실제 기온</u>을 넣어
+        선택한 <b>학습 연도</b>로 모델을 만들고, <b>검증 연도</b>의 <u>실제 기온</u>을 넣어
         예측값을 산출한 뒤 실적과 비교합니다.<br>
+        4가지 방식을 나란히 비교: <b>① Poly-3 단일</b> · <b>② 분리·3차식</b>(참고) · <b>③ 분리·2차식</b> · <b>④ 단순N년평균</b><br>
         검증 R²/MAE가 양호하면 → 같은 설정으로 <b>📈 공급량 예측</b> 탭에서 미래 예측을 수행하세요.
         </div>
         """, unsafe_allow_html=True)
@@ -1590,62 +1591,147 @@ def main():
         for prod in vf_products:
             naive_by_product[prod] = train_data_vf.groupby("월")[prod].mean()
 
+        # 모델 설명
+        st.markdown("---")
+        st.markdown(f"""
+**모델 비교 설명**
+- **Poly-3 단일**: 전체 기온 범위를 하나의 3차 다항식으로 학습 (기존 방식)
+- **분리·3차식**: 동절기(≤{WINTER_T:.0f}℃)와 하절기(≥{SUMMER_T:.0f}℃)를 각각 3차식으로 분리 학습 (참고용)
+- **분리·2차식**: 동절기/하절기를 각각 2차식으로 분리 학습 (하절기 표본 부족 시 3차식보다 안정적)
+- **{naive_label}**: 학습 연도의 월별 평균값을 그대로 사용 (기온 무관 베이스라인)
+""")
+
         for prod in vf_products:
             st.markdown(f'<div class="sub">📦 {prod}</div>', unsafe_allow_html=True)
             y_train_vf = train_data_vf[prod].values.astype(float)
             x_eval = eval_data_vf["월평균기온"].values.astype(float)
             y_actual = eval_data_vf[prod].values.astype(float)
 
-            y_pred, r2_train, model_vf, poly_vf = fit_poly3(x_train_vf, y_train_vf, x_eval)
+            # ── 모델 1: Poly-3 단일 ──
+            y_pred_v1, r2_train, model_vf, poly_vf = fit_poly3(x_train_vf, y_train_vf, x_eval)
 
-            # 검증 R²/MAE
-            valid_mask = ~np.isnan(y_pred) & ~np.isnan(y_actual)
+            # ── 모델 2: 분리·3차식 ──
+            train_for_split = train_data_vf[["월평균기온", prod]].rename(
+                columns={"월평균기온": "기온_split", prod: "공급량_split"})
+            models_v2, w_data_v2, s_data_v2 = fit_piecewise_seasonal_models(
+                train_for_split, x_col="기온_split", y_col="공급량_split", degree=3)
+            has_v2 = models_v2["winter"] is not None and models_v2["summer"] is not None
+            y_pred_v2 = predict_piecewise_seasonal(models_v2, x_eval) if has_v2 else np.full_like(x_eval, np.nan)
+
+            # ── 모델 3: 분리·2차식 ──
+            models_v3, w_data_v3, s_data_v3 = fit_piecewise_seasonal_models(
+                train_for_split, x_col="기온_split", y_col="공급량_split", degree=2)
+            has_v3 = models_v3["winter"] is not None and models_v3["summer"] is not None
+            y_pred_v3 = predict_piecewise_seasonal(models_v3, x_eval) if has_v3 else np.full_like(x_eval, np.nan)
+
+            # ── 모델 4: 단순평균 ──
+            naive_vals = eval_data_vf["월"].map(naive_by_product[prod]).values.astype(float)
+
+            # 검증 R²/MAE 계산
+            valid_mask = ~np.isnan(y_pred_v1) & ~np.isnan(y_actual)
             if valid_mask.sum() < 3:
                 st.warning(f"{prod}: 검증 가능한 데이터가 3건 미만입니다.")
                 continue
-            r2_eval = r2_score(y_actual[valid_mask], y_pred[valid_mask])
-            mae_eval = np.mean(np.abs(y_pred[valid_mask] - y_actual[valid_mask]))
 
-            # 단순평균 예측
-            naive_vals = eval_data_vf["월"].map(naive_by_product[prod]).values.astype(float)
-            valid_naive = ~np.isnan(naive_vals) & ~np.isnan(y_actual)
-            r2_naive = r2_score(y_actual[valid_naive], naive_vals[valid_naive]) if valid_naive.sum() >= 3 else np.nan
-            mae_naive = np.mean(np.abs(naive_vals[valid_naive] - y_actual[valid_naive])) if valid_naive.sum() >= 3 else np.nan
+            def _calc_r2_mae(y_true, y_pred_arr):
+                vm = ~np.isnan(y_pred_arr) & ~np.isnan(y_true)
+                if vm.sum() < 3:
+                    return np.nan, np.nan
+                return (r2_score(y_true[vm], y_pred_arr[vm]),
+                        np.mean(np.abs(y_pred_arr[vm] - y_true[vm])))
 
-            # R²/MAE 카드
-            mc1, mc2 = st.columns(2)
-            render_r2_mae_card(mc1, "Poly-3 예측", r2_eval, mae_eval)
-            render_r2_mae_card(mc2, f"{naive_label} (참고)", r2_naive, mae_naive)
+            r2_v1, mae_v1 = _calc_r2_mae(y_actual, y_pred_v1)
+            r2_v2, mae_v2 = _calc_r2_mae(y_actual, y_pred_v2)
+            r2_v3, mae_v3 = _calc_r2_mae(y_actual, y_pred_v3)
+            r2_naive, mae_naive = _calc_r2_mae(y_actual, naive_vals)
+
+            # R²/MAE 카드 — MAE가 가장 낮은 카드에 ✅ 표시
+            metrics_vf = [
+                {"label": "Poly-3 단일", "r2": r2_v1, "mae": mae_v1, "delta": None},
+            ]
+            if has_v2:
+                metrics_vf.append({"label": "분리·3차식(참고)", "r2": r2_v2, "mae": mae_v2,
+                                   "delta": r2_v2 - r2_v1 if not np.isnan(r2_v2) else None})
+            if has_v3:
+                metrics_vf.append({"label": "분리·2차식", "r2": r2_v3, "mae": mae_v3,
+                                   "delta": r2_v3 - r2_v1 if not np.isnan(r2_v3) else None})
+            metrics_vf.append({"label": f"{naive_label}", "r2": r2_naive, "mae": mae_naive, "delta": None})
+
+            valid_maes = [m["mae"] for m in metrics_vf if not np.isnan(m["mae"])]
+            best_mae = min(valid_maes) if valid_maes else None
+            mcols_vf = st.columns(len(metrics_vf))
+            for i, m in enumerate(metrics_vf):
+                lbl = f'✅ {m["label"]}' if (best_mae is not None and m["mae"] == best_mae) else m["label"]
+                if not np.isnan(m["r2"]) and not np.isnan(m["mae"]):
+                    render_r2_mae_card(mcols_vf[i], lbl, m["r2"], m["mae"], delta_r2=m["delta"])
+                else:
+                    mcols_vf[i].markdown(f'<div style="font-size:0.8rem;color:#666;">{m["label"]}</div>'
+                                         '<div style="color:#999;">데이터 부족</div>', unsafe_allow_html=True)
+
             st.caption(f"Poly-3 학습 R² = {r2_train:.4f} | {poly_eq_text(model_vf)}")
+
+            # 분리 모델 수식 표시
+            if has_v3:
+                cw_vf = models_v3["winter"].named_steps["linearregression"].coef_
+                iw_vf = models_v3["winter"].named_steps["linearregression"].intercept_
+                cs_vf = models_v3["summer"].named_steps["linearregression"].coef_
+                is_vf = models_v3["summer"].named_steps["linearregression"].intercept_
+                r2_w_vf = r2_score(w_data_v3["공급량_split"],
+                                   models_v3["winter"].predict(w_data_v3[["기온_split"]]))
+                r2_s_vf = r2_score(s_data_v3["공급량_split"],
+                                   models_v3["summer"].predict(s_data_v3[["기온_split"]]))
+                st.caption(f"분리·2차식 — 동절기(n={len(w_data_v3)}, R²={r2_w_vf:.4f}): "
+                           f"{poly_eq_str(cw_vf, iw_vf)} | "
+                           f"하절기(n={len(s_data_v3)}, R²={r2_s_vf:.4f}): "
+                           f"{poly_eq_str(cs_vf, is_vf)}")
 
             # 비교 DataFrame 구성
             eval_comp = eval_data_vf[["연", "월"]].copy()
             eval_comp["Year_Month"] = eval_comp.apply(
                 lambda r: f"{int(r['연'])}-{int(r['월']):02d}", axis=1)
             eval_comp["실적"] = y_actual
-            eval_comp["Poly-3 예측"] = np.round(y_pred).astype(float)
+            eval_comp["Poly-3 단일"] = np.round(y_pred_v1).astype(float)
+            if has_v2:
+                eval_comp["분리·3차식"] = np.round(y_pred_v2).astype(float)
+            if has_v3:
+                eval_comp["분리·2차식"] = np.round(y_pred_v3).astype(float)
             eval_comp[naive_label] = np.round(naive_vals).astype(float)
             eval_comp["월평균기온"] = x_eval
 
-            # 라인차트 — 실적 vs 예측 vs 단순평균
+            # 차트용 컬럼 목록
+            chart_cols = ["실적", "Poly-3 단일"]
+            if has_v2:
+                chart_cols.append("분리·3차식")
+            if has_v3:
+                chart_cols.append("분리·2차식")
+            chart_cols.append(naive_label)
+
+            # 라인차트
             show_temp_vf = st.checkbox("🌡️ 실제기온 표시", key=f"vf_temp_{prod}")
-            chart_cols = ["실적", "Poly-3 예측", naive_label]
             render_line_chart(eval_comp, "Year_Month", chart_cols, height=420,
                               secondary_col="월평균기온" if show_temp_vf else None,
                               secondary_name="실제기온(℃)")
 
+            # 표에 표시할 항목 선택
+            st.markdown("**📌 표에 표시할 항목 선택** (아래 연도별·월별 표에만 반영)")
+            selected_vf = st.multiselect(
+                "표시할 시리즈", options=chart_cols, default=chart_cols,
+                key=f"vf_series_{prod}")
+            if not selected_vf:
+                st.info("표시할 항목을 1개 이상 선택해주세요.")
+                selected_vf = chart_cols
+            table_series_vf = _ensure_baseline_cols(selected_vf, "실적", has_plan=False)
+
             # 월별 차이표
             diff_df = _build_diff_table(eval_comp, "Year_Month", "실적",
-                                        ["실적", "Poly-3 예측", naive_label],
-                                        target_label="실적")
+                                        table_series_vf, target_label="실적")
             st.markdown("**🗂️ 월별 예측 vs 실적 비교**")
             render_diff_table(diff_df, "Year_Month", target_col="실적",
                               key_prefix=f"vf_monthly_{prod}")
 
             # 연도별 요약
             st.markdown("**📆 연도별 요약**")
-            render_yearly_diff_table(eval_comp, "실적",
-                                     ["실적", "Poly-3 예측", naive_label],
+            render_yearly_diff_table(eval_comp, "실적", table_series_vf,
                                      key_prefix=f"vf_yearly_{prod}",
                                      target_label="실적")
 
