@@ -1722,18 +1722,18 @@ def main():
                 selected_vf = chart_cols
             table_series_vf = _ensure_baseline_cols(selected_vf, "실적", has_plan=False)
 
+            # 연도별 요약 (먼저 표시 — 냉방용 탭과 동일 구성)
+            st.markdown("**📆 연도별 실적 대비 차이 요약**")
+            yearly_table_vf = render_yearly_diff_table(eval_comp, "실적", table_series_vf,
+                                     key_prefix=f"vf_yearly_{prod}",
+                                     target_label="실적")
+
             # 월별 차이표
             diff_df = _build_diff_table(eval_comp, "Year_Month", "실적",
                                         table_series_vf, target_label="실적")
-            st.markdown("**🗂️ 월별 예측 vs 실적 비교**")
+            st.markdown("**🗂️ 월별 상세 비교**")
             render_diff_table(diff_df, "Year_Month", target_col="실적",
                               key_prefix=f"vf_monthly_{prod}")
-
-            # 연도별 요약
-            st.markdown("**📆 연도별 요약**")
-            render_yearly_diff_table(eval_comp, "실적", table_series_vf,
-                                     key_prefix=f"vf_yearly_{prod}",
-                                     target_label="실적")
 
             # 산점도
             with st.expander(f"🔎 {prod} — 기온↔공급량 산점도 (학습 데이터)"):
