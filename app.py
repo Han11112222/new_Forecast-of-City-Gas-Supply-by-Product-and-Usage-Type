@@ -1548,7 +1548,7 @@ def main():
         선택한 <b>학습 연도</b>로 모델을 만들고, <b>검증 연도</b>의 <u>실제 기온</u>을 넣어
         예측값을 산출한 뒤 실적과 비교합니다.<br>
         4가지 방식을 나란히 비교: <b>① Poly-3 단일</b> · <b>② 분리·3차식</b>(참고) · <b>③ 분리·2차식</b> · <b>④ 단순N년평균</b><br>
-        검증 R²/MAE가 양호하면 → 같은 설정으로 <b>📈 공급량 예측</b> 탭에서 미래 예측을 수행하세요.
+        검증 R²/MAE가 양호하면 → 아래 <b>📈 미래 예측</b> 섹션에서 바로 예측을 수행하세요.
         </div>
         """, unsafe_allow_html=True)
 
@@ -1749,6 +1749,197 @@ def main():
                                file_name=f"공급량검증_{prod}.csv", mime="text/csv",
                                key=f"dl_vf_{prod}")
             st.markdown("---")
+
+        # ══════════════════════════════════════
+        # ── 검증 탭 내 미래 예측 섹션 ──
+        # ══════════════════════════════════════
+        st.markdown("### 📈 미래 공급량 예측")
+        st.markdown("""
+        <div class="info-box">
+        위 검증에서 사용한 <b>학습 연도·상품</b> 설정을 그대로 이어받아 미래 예측을 수행합니다.<br>
+        아래에서 <b>예상기온 산출 기준 연도</b>와 <b>시나리오 Δ°C</b>, <b>예측 기간</b>을 설정한 뒤 실행하세요.
+        </div>
+        """, unsafe_allow_html=True)
+
+        _max_temp_year_vf = max(years_all)
+        default_temp_years_vf = sorted([y for y in (_max_temp_year_vf, _max_temp_year_vf - 1, _max_temp_year_vf - 2)
+                                         if y in years_all])
+        if not default_temp_years_vf:
+            default_temp_years_vf = years_all[-3:] if len(years_all) >= 3 else years_all
+
+        temp_avg_years_vf = st.multiselect(
+            "🌡️ 과거기온 선택 (예상기온 산출 기준 연도 · 기본값: 최근 3년 평균)",
+            options=years_all,
+            default=default_temp_years_vf,
+            key="temp_avg_years_vf")
+        st.caption("👆 미래(예측 기간)의 '예상기온'을 계산할 때 평균낼 연도. "
+                   "학습 연도와 별개로 원하는 연도만 골라 월별 평균기온을 낼 수 있습니다.")
+
+        st.markdown('<div class="sub">🌡️ 시나리오 Δ°C (예상기온 보정)</div>', unsafe_allow_html=True)
+        sc1_vf, sc2_vf, sc3_vf = st.columns(3)
+        with sc1_vf:
+            d_norm_vf = st.number_input("Normal Δ°C", value=0.0, step=0.1, format="%.1f", key="d_norm_vf")
+        with sc2_vf:
+            d_best_vf = st.number_input("Best Δ°C", value=-1.0, step=0.1, format="%.1f", key="d_best_vf")
+        with sc3_vf:
+            d_cons_vf = st.number_input("Conservative Δ°C", value=1.0, step=0.1, format="%.1f", key="d_cons_vf")
+
+        st.markdown('<div class="sub">📅 예측 기간</div>', unsafe_allow_html=True)
+        pc1_vf, pc2_vf, pc3_vf, pc4_vf = st.columns(4)
+        with pc1_vf:
+            pred_start_y_vf = st.selectbox("시작 연도", list(range(2020, 2036)), index=6, key="pred_sy_vf")
+        with pc2_vf:
+            pred_start_m_vf = st.selectbox("시작 월", list(range(1, 13)), index=0, key="pred_sm_vf")
+        with pc3_vf:
+            pred_end_y_vf = st.selectbox("종료 연도", list(range(2020, 2036)), index=7, key="pred_ey_vf")
+        with pc4_vf:
+            pred_end_m_vf = st.selectbox("종료 월", list(range(1, 13)), index=11, key="pred_em_vf")
+
+        if st.button("🧮 공급량 예측 실행", type="primary", key="btn_supply_pred_vf"):
+            if not vf_products:
+                st.warning("예측할 상품을 선택해주세요 (상단 '검증 상품 선택')."); st.stop()
+            if not vf_train_years:
+                st.warning("학습 연도를 선택해주세요."); st.stop()
+            if not temp_avg_years_vf:
+                st.warning("과거기온(예상기온 산출 기준) 연도를 선택해주세요."); st.stop()
+
+            train_data_pred = merged[merged["연"].isin(vf_train_years)]
+            if len(train_data_pred) < 12:
+                st.error("학습 데이터가 12건 미만입니다. 학습 연도를 추가해주세요."); st.stop()
+
+            temp_basis_pred = merged[merged["연"].isin(temp_avg_years_vf)]
+            if temp_basis_pred.empty:
+                st.error("과거기온 연도에 해당하는 데이터가 없습니다."); st.stop()
+
+            x_train_pred = train_data_pred["월평균기온"].values.astype(float)
+
+            f_start_vf = pd.Timestamp(year=pred_start_y_vf, month=pred_start_m_vf, day=1)
+            f_end_vf   = pd.Timestamp(year=pred_end_y_vf,   month=pred_end_m_vf,   day=1)
+            if f_end_vf < f_start_vf:
+                st.error("예측 종료가 시작보다 앞입니다."); st.stop()
+
+            fut_months_vf = pd.date_range(start=f_start_vf, end=f_end_vf, freq="MS")
+            fut_df_vf = pd.DataFrame({"연": fut_months_vf.year, "월": fut_months_vf.month})
+
+            # 예상기온 산출
+            monthly_avg_vf = temp_basis_pred.groupby("월")["월평균기온"].mean()
+            if forecast_temp_df is not None:
+                fut_df_vf = fut_df_vf.merge(forecast_temp_df[["연", "월", "예상기온"]],
+                    on=["연", "월"], how="left")
+                miss_vf = fut_df_vf["예상기온"].isna()
+                if miss_vf.any():
+                    fut_df_vf.loc[miss_vf, "예상기온"] = fut_df_vf.loc[miss_vf, "월"].map(monthly_avg_vf)
+            else:
+                fut_df_vf["예상기온"] = fut_df_vf["월"].map(monthly_avg_vf)
+
+            if fut_df_vf["예상기온"].isna().any():
+                st.warning("일부 월은 선택한 연도만으로는 예상기온을 정하지 못해, 전체 연도 평균으로 대신 채웠습니다.")
+                overall_avg_vf = merged.groupby("월")["월평균기온"].mean()
+                miss_vf2 = fut_df_vf["예상기온"].isna()
+                fut_df_vf.loc[miss_vf2, "예상기온"] = fut_df_vf.loc[miss_vf2, "월"].map(overall_avg_vf)
+            if fut_df_vf["예상기온"].isna().any():
+                fallback_single_vf = merged["월평균기온"].mean()
+                fut_df_vf["예상기온"] = fut_df_vf["예상기온"].fillna(fallback_single_vf)
+
+            st.caption(f"🌡️ 예상기온 산출 기준: {', '.join(str(y) for y in sorted(temp_avg_years_vf))}년 월별 평균")
+
+            scenarios_vf = {"Normal": d_norm_vf, "Best": d_best_vf, "Conservative": d_cons_vf}
+
+            # 단순N년평균 기준
+            naive_label_pred = f"단순{len(temp_avg_years_vf)}년평균"
+            naive_monthly_pred = temp_basis_pred.groupby("월")
+
+            for prod in vf_products:
+                y_train_pred = train_data_pred[prod].values.astype(float)
+                st.markdown(f'<div class="sub">📦 {prod}</div>', unsafe_allow_html=True)
+                _, r2_train_pred, model_pred, poly_pred = fit_poly3(x_train_pred, y_train_pred, x_train_pred)
+                st.caption(f"Poly-3 Train R² = {r2_train_pred:.4f} | {poly_eq_text(model_pred)}")
+
+                naive_monthly_prod = temp_basis_pred.groupby("월")[prod].mean()
+                naive_vals_by_month_pred = {m: naive_monthly_prod.get(m, np.nan) for m in range(1, 13)}
+
+                scenario_tables_vf = {}
+                for sname, delta in scenarios_vf.items():
+                    x_fut_vf = (fut_df_vf["예상기온"] + delta).values.astype(float)
+                    y_pred_vf_s, _, _, _ = fit_poly3(x_train_pred, y_train_pred, x_fut_vf)
+                    y_pred_vf_s = np.clip(np.rint(y_pred_vf_s).astype(np.int64), 0, None)
+                    tbl_vf = fut_df_vf[["연", "월"]].copy()
+                    tbl_vf["예상기온"] = fut_df_vf["예상기온"] + delta
+                    tbl_vf[prod] = y_pred_vf_s
+                    scenario_tables_vf[sname] = tbl_vf
+
+                # 차트
+                fig_pred = go.Figure()
+                for y in sorted(years_all)[-3:]:
+                    act = merged[merged["연"] == y][["월", prod, "월평균기온"]].sort_values("월")
+                    if act.empty: continue
+                    fig_pred.add_trace(go.Scatter(
+                        x=[f"{int(m)}월" for m in act["월"]], y=act[prod],
+                        customdata=np.round(act["월평균기온"].values, 2),
+                        mode="lines+markers", name=f"{y} 실적",
+                        hovertemplate="%{x} %{y:,.0f} MJ<br>기온 %{customdata:.1f}℃<extra></extra>"))
+                for y in sorted(fut_df_vf["연"].unique()):
+                    tbl_n = scenario_tables_vf["Normal"]
+                    row = tbl_n[tbl_n["연"] == y].sort_values("월")
+                    fig_pred.add_trace(go.Scatter(
+                        x=[f"{int(m)}월" for m in row["월"]], y=row[prod],
+                        customdata=np.round(row["예상기온"].values, 2),
+                        mode="lines", name=f"예측(Normal) {y}", line=dict(dash="dash"),
+                        hovertemplate="%{x} %{y:,.0f} MJ<br>기온 %{customdata:.1f}℃<extra></extra>"))
+                fig_pred.add_trace(go.Scatter(
+                    x=[f"{m}월" for m in range(1, 13)],
+                    y=[naive_vals_by_month_pred[m] for m in range(1, 13)],
+                    mode="lines+markers",
+                    name=f"{naive_label_pred}({min(temp_avg_years_vf)}~{max(temp_avg_years_vf)})",
+                    line=dict(dash="dot", color="#7c3aed", width=2.5),
+                    marker=dict(symbol="diamond", size=7),
+                    hovertemplate="%{x} %{y:,.0f} MJ<extra></extra>"))
+                fig_pred.update_layout(**CHART_LAYOUT)
+                fig_pred.update_layout(
+                    title=f"{prod} — Poly-3 예측 (Train R²={r2_train_pred:.4f})",
+                    xaxis_title="월", yaxis_title="공급량 (MJ)", yaxis_rangemode="tozero",
+                    margin=dict(t=60, b=80), dragmode="pan",
+                    legend=dict(orientation="h", yanchor="top", y=-0.13,
+                                xanchor="center", x=0.5, font=dict(size=10)))
+                st.plotly_chart(fig_pred, use_container_width=True,
+                                config=dict(scrollZoom=True, displaylogo=False))
+                st.caption(f"🟣 점선(다이아몬드)이 '{naive_label_pred}' — 기온 회귀식 없이 최근 "
+                          f"{len(temp_avg_years_vf)}개년({', '.join(str(y) for y in sorted(temp_avg_years_vf))}) "
+                          "실적을 월별로 그대로 평균낸 참고선입니다.")
+
+                # 시나리오별 테이블
+                st.markdown(f'<div class="sub">📋 {prod} — 시나리오별 월별 예측</div>',
+                            unsafe_allow_html=True)
+                compare_tbl_vf = fut_df_vf[["연", "월"]].copy()
+                for sname in scenarios_vf:
+                    compare_tbl_vf[sname] = scenario_tables_vf[sname][prod].values
+                compare_tbl_vf[naive_label_pred] = compare_tbl_vf["월"].map(naive_vals_by_month_pred)
+                sum_row_vf = {"연": "합계", "월": ""}
+                for sname in scenarios_vf:
+                    sum_row_vf[sname] = compare_tbl_vf[sname].sum()
+                sum_row_vf[naive_label_pred] = compare_tbl_vf[naive_label_pred].sum()
+                compare_full_vf = pd.concat([compare_tbl_vf, pd.DataFrame([sum_row_vf])], ignore_index=True)
+                render_centered_table(compare_full_vf, int_cols=list(scenarios_vf.keys()) + [naive_label_pred])
+
+                # 산점도
+                with st.expander(f"🔎 {prod} — 기온↔공급량 산점도 (학습 데이터)"):
+                    fig_sc_pred = _make_scatter_chart(x_train_pred, y_train_pred,
+                        f"{prod} — 기온 vs 공급량", "기온 (℃)", "공급량 (MJ)", r2_train_pred)
+                    st.plotly_chart(fig_sc_pred, use_container_width=True,
+                                    config=dict(scrollZoom=True, displaylogo=False))
+
+            # 엑셀 다운로드
+            buf_vf = BytesIO()
+            with pd.ExcelWriter(buf_vf, engine="openpyxl") as writer:
+                for sname in scenarios_vf:
+                    all_prods_vf = fut_df_vf[["연", "월"]].copy()
+                    for prod in vf_products:
+                        all_prods_vf[prod] = scenario_tables_vf[sname][prod].values if sname in scenario_tables_vf else 0
+                    all_prods_vf.to_excel(writer, sheet_name=sname, index=False)
+            st.download_button("⬇️ 예측 결과 엑셀 다운로드", data=buf_vf.getvalue(),
+                file_name="공급량_예측_결과.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_pred_vf")
 
     # ══════════════════════════════════════════
     # ── TAB 3: 공급량 예측 ──
