@@ -937,19 +937,22 @@ def render_html_diff_table(df, x_col, target_col=None):
 </div>""", unsafe_allow_html=True)
 
 
-def render_diff_table(df, x_col, target_col=None, key_prefix="tbl"):
+def render_diff_table(df, x_col, target_col=None, key_prefix="tbl", show_mae=True):
     """
     비교표 렌더링 공통 헬퍼.
     - 좌측 상단에 'MAE 변환' 토글(체크박스)을 두고, 켜면 차이 컬럼을 절대값(MAE 스타일)으로 표시
     - x_col(구분 열)과 target_col(실적 등 기준 열)에 배경색 하이라이트 적용
     - 컬럼명에 줄바꿈(\\n)이 들어간 긴 헤더는 HTML 테이블로 렌더링해 풀네임을 2줄로 보여준다.
     """
-    use_mae = st.checkbox("📌 차이를 절대값(MAE)으로 표시", key=f"{key_prefix}_mae_toggle")
-    disp = _apply_mae_toggle(df, x_col, use_mae)
+    if show_mae:
+        use_mae = st.checkbox("📌 차이를 절대값(MAE)으로 표시", key=f"{key_prefix}_mae_toggle")
+        disp = _apply_mae_toggle(df, x_col, use_mae)
+    else:
+        disp = df
     render_html_diff_table(disp, x_col, target_col=target_col)
 
 
-def render_yearly_diff_table(monthly_raw_df, target_col, selected_cols, key_prefix="tbl", target_label=None):
+def render_yearly_diff_table(monthly_raw_df, target_col, selected_cols, key_prefix="tbl", target_label=None, show_mae=True):
     """
     연도별 집계표 전용 렌더러. monthly_raw_df는 'Year'(또는 'Year_Month') + 선택 시리즈의
     "월별 원본값"을 담은 DataFrame이어야 한다 (차이 컬럼 없이).
@@ -960,8 +963,10 @@ def render_yearly_diff_table(monthly_raw_df, target_col, selected_cols, key_pref
                   절대값이 나와서 실제 월별 오차 크기를 반영하지 못하므로, 반드시 월 단위에서
                   먼저 절대값을 취하고 나서 연도로 집계해야 한다.)
     """
-    use_mae = st.checkbox("📌 차이를 절대값(MAE)으로 표시 — 월별 오차를 먼저 절대값화한 뒤 연평균",
-                          key=f"{key_prefix}_mae_toggle")
+    use_mae = False
+    if show_mae:
+        use_mae = st.checkbox("📌 차이를 절대값(MAE)으로 표시 — 월별 오차를 먼저 절대값화한 뒤 연평균",
+                              key=f"{key_prefix}_mae_toggle")
 
     tmp = monthly_raw_df.copy()
     if 'Year' not in tmp.columns:
@@ -1787,8 +1792,16 @@ def main():
         with pc4_vf:
             pred_end_m_vf = st.selectbox("종료 월", list(range(1, 13)), index=11, key="pred_em_vf")
 
+        # 현재 파라미터 스냅샷 — 파라미터 변경 시 결과 자동 숨김
+        _pred_params = (tuple(sorted(temp_avg_years_vf)),
+                        pred_start_y_vf, pred_start_m_vf,
+                        pred_end_y_vf, pred_end_m_vf)
+        if st.session_state.get("_pred_params_last") != _pred_params:
+            st.session_state["supply_pred_run"] = False
+
         if st.button("🧮 공급량 예측 실행", type="primary", key="btn_supply_pred_vf"):
             st.session_state["supply_pred_run"] = True
+            st.session_state["_pred_params_last"] = _pred_params
 
         if st.session_state.get("supply_pred_run", False):
             if not vf_products:
@@ -1837,28 +1850,29 @@ def main():
                 fut_df_vf["예상기온"] = np.nan
 
             # ① 실측 기온이 있는 월은 먼저 채움 (예: 2026-01~08)
-            actual_temp_lookup = merged.groupby(["연", "월"])["월평균기온"].mean()
+            # temp_monthly는 supply와 무관하게 모든 실측 월평균기온을 보유
+            actual_temp_lookup = temp_monthly.set_index(["연", "월"])["월평균기온"]
             for idx in fut_df_vf.index:
                 if pd.isna(fut_df_vf.loc[idx, "예상기온"]):
                     key = (int(fut_df_vf.loc[idx, "연"]), int(fut_df_vf.loc[idx, "월"]))
                     if key in actual_temp_lookup.index:
                         fut_df_vf.loc[idx, "예상기온"] = actual_temp_lookup.loc[key]
 
-            # 기온 풀: {(연, 월): 기온} — 실측 데이터 + 위에서 채운 실측 포함
+            # 기온 풀: {(연, 월): 기온} — temp_monthly의 모든 실측 데이터
             temp_pool = {}
-            for _, row in merged[["연", "월", "월평균기온"]].iterrows():
+            for _, row in temp_monthly.iterrows():
                 temp_pool[(int(row["연"]), int(row["월"]))] = row["월평균기온"]
 
             rolling_year_map = {}
-            actual_years_set = set(int(y) for y in merged["연"].unique())
+            actual_years_set = set(int(y) for y in temp_monthly["연"].unique())
             all_pool_years = set(actual_years_set)
 
             # 실측 기온이 있는 월을 추적 (캡션용)
-            actual_month_count = {}
+            actual_months_map = {}  # {year: [list of months with actual temp]}
             for pred_y in sorted(fut_df_vf["연"].unique()):
                 pred_y = int(pred_y)
                 filled = fut_df_vf[(fut_df_vf["연"] == pred_y) & fut_df_vf["예상기온"].notna()]
-                actual_month_count[pred_y] = len(filled)
+                actual_months_map[pred_y] = sorted(int(m) for m in filled["월"])
 
             # ② 실측이 없는 월 → 롤링 N년 평균으로 채움
             for pred_y in sorted(fut_df_vf["연"].unique()):
@@ -1914,23 +1928,24 @@ def main():
             cap_parts = []
             for py in sorted(set(int(y) for y in fut_df_vf["연"].unique())):
                 total_months = len(fut_df_vf[fut_df_vf["연"] == py])
-                n_actual = actual_month_count.get(py, 0)
+                actual_ms = actual_months_map.get(py, [])
+                n_actual = len(actual_ms)
                 roll_yrs = rolling_year_map.get(py, [])
                 if n_actual == total_months:
                     cap_parts.append(f"{py}년: 실측기온")
                 elif n_actual > 0 and roll_yrs:
+                    max_actual_m = max(actual_ms)
                     yr_labels = []
                     for y in roll_yrs:
                         yr_labels.append(f"{y}(추정)" if y not in actual_years_set else str(y))
                     cap_parts.append(
-                        f"{py}년: 1~{n_actual}월 실측, "
-                        f"{n_actual+1}~12월 {','.join(yr_labels)}년 평균")
+                        f"{py}년: 1~{max_actual_m}월 실측, "
+                        f"{max_actual_m+1}~12월 {','.join(yr_labels)}년 평균")
                 elif roll_yrs:
                     yr_labels = []
                     for y in roll_yrs:
                         yr_labels.append(f"{y}(추정)" if y not in actual_years_set else str(y))
                     cap_parts.append(f"{py}년→{','.join(yr_labels)}년 평균")
-            st.caption(f"🌡️ 예상기온 산출 (롤링 {N_roll}년 평균): " + " | ".join(cap_parts))
             st.caption(f"🌡️ 예상기온 산출 (롤링 {N_roll}년 평균): " + " | ".join(cap_parts))
 
             # 단순N년평균 라벨
@@ -2038,7 +2053,8 @@ def main():
                 st.markdown("**📆 연도별 시나리오 합산**")
                 render_yearly_diff_table(pred_comp, pred_target_col, table_series_pred,
                                          key_prefix=f"pred_yearly_{prod}",
-                                         target_label="실적" if has_actual_pred else None)
+                                         target_label="실적" if has_actual_pred else None,
+                                         show_mae=has_actual_pred)
 
                 # 월별 시나리오
                 diff_pred = _build_diff_table(pred_comp, "Year_Month", pred_target_col,
@@ -2052,7 +2068,8 @@ def main():
                 st.markdown("**🗂️ 월별 시나리오**")
                 render_diff_table(disp_pred, "Year_Month",
                                   target_col=pred_target_col if (pred_target_col and pred_target_col in disp_pred.columns) else None,
-                                  key_prefix=f"pred_monthly_{prod}")
+                                  key_prefix=f"pred_monthly_{prod}",
+                                  show_mae=has_actual_pred)
 
                 # CSV 다운로드
                 csv_pred = disp_pred.to_csv(index=False).encode("utf-8-sig")
