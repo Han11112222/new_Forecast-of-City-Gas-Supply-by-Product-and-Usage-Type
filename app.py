@@ -1091,14 +1091,14 @@ def render_cooling_analysis():
         "2. 과거 적합도 검증 연도 (냉방용)", options=all_years_cool,
         default=all_years_cool[-2:], key="cool_eval_years")
     max_year_c = int(merged_cool['Year'].max())
+    future_year_options_c = list(range(max_year_c, max_year_c + 6))
     future_years_c = st.sidebar.multiselect(
         "3. 미래 시나리오 추정 연도 (냉방용)",
-        options=list(range(max_year_c + 1, max_year_c + 6)),
-        default=[max_year_c + 1, max_year_c + 2], key="cool_future_years")
+        options=future_year_options_c,
+        default=[max_year_c + 1], key="cool_future_years")
     y_years_c = st.sidebar.slider(
         "4. 미래 예측기온 추정 기준 (최근 Y년 평균, 냉방용)",
         min_value=1, max_value=10, value=3, step=1, key="cool_y_years")
-    sim_base_years_c = list(range(max_year_c - y_years_c + 1, max_year_c + 1))
 
     if not train_years_c or not eval_years_c:
         st.warning("👈 좌측 패널에서 냉방용 학습/검증 연도를 선택해주세요.")
@@ -1284,16 +1284,83 @@ ${poly_eq_str(cs, isu)}$
     st.subheader("🔮 미래 냉방용 판매량 추정 시나리오")
 
     if future_years_c:
-        hist_temp_c = meter_temp_df[meter_temp_df['Year'].isin(sim_base_years_c)]
-        sim_month_temp_c = hist_temp_c.groupby('Month')['검침기온'].mean().reset_index()
+        # ── 롤링 N년 평균 기온 산출 (실측 우선, 추정 누적) ──
+        # meter_temp_df에서 실측 검침기온을 가져옴 (sales와 무관)
+        N_roll_c = y_years_c
+        all_meter_years = sorted(meter_temp_df['Year'].unique())
+
+        # 기온 풀: {(연, 월): 검침기온} — 실측 데이터
+        temp_pool_c = {}
+        for _, row in meter_temp_df[['Year', 'Month', '검침기온']].iterrows():
+            temp_pool_c[(int(row['Year']), int(row['Month']))] = row['검침기온']
+
+        actual_meter_years_set = set(int(y) for y in meter_temp_df['Year'].unique())
+        all_pool_years_c = set(actual_meter_years_set)
 
         future_rows = []
-        for y in future_years_c:
+        for y in sorted(future_years_c):
             for m in range(1, 13):
-                t = sim_month_temp_c.loc[sim_month_temp_c['Month'] == m, '검침기온']
-                if len(t) > 0:
-                    future_rows.append({'Year': y, 'Month': m, '검침기온': float(t.values[0])})
+                future_rows.append({'Year': y, 'Month': m, '검침기온': np.nan})
         future_df_c = pd.DataFrame(future_rows)
+
+        # ① 실측 검침기온이 있는 월은 먼저 채움
+        for idx in future_df_c.index:
+            key = (int(future_df_c.loc[idx, 'Year']), int(future_df_c.loc[idx, 'Month']))
+            if key in temp_pool_c:
+                future_df_c.loc[idx, '검침기온'] = temp_pool_c[key]
+
+        # 실측으로 채워진 월 추적 (캡션용)
+        actual_months_cool = {}
+        for fy in sorted(future_years_c):
+            filled = future_df_c[(future_df_c['Year'] == fy) & future_df_c['검침기온'].notna()]
+            actual_months_cool[fy] = sorted(int(m) for m in filled['Month'])
+
+        # ② 실측 없는 월 → 롤링 N년 평균 (추정 누적)
+        rolling_year_map_c = {}
+        for fy in sorted(future_years_c):
+            fy = int(fy)
+            missing_mask = (future_df_c['Year'] == fy) & future_df_c['검침기온'].isna()
+            if not missing_mask.any():
+                for _, row in future_df_c[future_df_c['Year'] == fy].iterrows():
+                    ym = (fy, int(row['Month']))
+                    if ym not in temp_pool_c and pd.notna(row['검침기온']):
+                        temp_pool_c[ym] = row['검침기온']
+                all_pool_years_c.add(fy)
+                rolling_year_map_c[fy] = []
+                continue
+
+            ideal = list(range(fy - N_roll_c, fy))
+            used = [y for y in ideal if y in all_pool_years_c]
+            if len(used) < N_roll_c:
+                before = sorted([y for y in all_pool_years_c if y < fy])
+                used = before[-N_roll_c:] if len(before) >= N_roll_c else (before if before else sorted(all_pool_years_c))
+            if not used:
+                used = sorted(all_pool_years_c)
+            rolling_year_map_c[fy] = used
+
+            month_temps = {}
+            for m in range(1, 13):
+                vals = [temp_pool_c[(y, m)] for y in used if (y, m) in temp_pool_c]
+                if vals:
+                    month_temps[m] = sum(vals) / len(vals)
+
+            future_df_c.loc[missing_mask, '검침기온'] = \
+                future_df_c.loc[missing_mask, 'Month'].map(month_temps)
+
+            for _, row in future_df_c[future_df_c['Year'] == fy].iterrows():
+                ym = (fy, int(row['Month']))
+                if ym not in temp_pool_c and pd.notna(row['검침기온']):
+                    temp_pool_c[ym] = row['검침기온']
+            all_pool_years_c.add(fy)
+
+        # 남은 NaN 폴백
+        if future_df_c['검침기온'].isna().any():
+            overall_cool = meter_temp_df.groupby('Month')['검침기온'].mean()
+            miss_c = future_df_c['검침기온'].isna()
+            future_df_c.loc[miss_c, '검침기온'] = future_df_c.loc[miss_c, 'Month'].map(overall_cool)
+        if future_df_c['검침기온'].isna().any():
+            future_df_c['검침기온'] = future_df_c['검침기온'].fillna(meter_temp_df['검침기온'].mean())
+
         future_df_c['예측_판매량_v1'] = model_base.predict(future_df_c[['검침기온']])
         future_df_c['예측_판매량_v3'] = predict_piecewise_seasonal(models_final, future_df_c['검침기온'].values)
         if has_cubic_split:
@@ -1311,8 +1378,24 @@ ${poly_eq_str(cs, isu)}$
             future_df_c = pd.merge(future_df_c, plan_df, on=['Year', 'Month'], how='left')
             has_plan_future = future_df_c['판매량_계획'].notna().any()
 
-        st.caption(f"미래 예측기온 추정: 최근 {y_years_c}개년"
-                   f"({min(sim_base_years_c)}~{max(sim_base_years_c)}) 동월 실제기온 평균 사용")
+        # 캡션: 연도별 기온 출처
+        cap_parts_c = []
+        for fy in sorted(future_years_c):
+            fy = int(fy)
+            actual_ms = actual_months_cool.get(fy, [])
+            n_actual = len(actual_ms)
+            total_m = len(future_df_c[future_df_c['Year'] == fy])
+            roll_yrs = rolling_year_map_c.get(fy, [])
+            if n_actual == total_m:
+                cap_parts_c.append(f"{fy}년: 실측기온")
+            elif n_actual > 0 and roll_yrs:
+                max_m = max(actual_ms)
+                yr_labels = [f"{y}(추정)" if y not in actual_meter_years_set else str(y) for y in roll_yrs]
+                cap_parts_c.append(f"{fy}년: 1~{max_m}월 실측, {max_m+1}~12월 {','.join(yr_labels)}년 평균")
+            elif roll_yrs:
+                yr_labels = [f"{y}(추정)" if y not in actual_meter_years_set else str(y) for y in roll_yrs]
+                cap_parts_c.append(f"{fy}년→{','.join(yr_labels)}년 평균")
+        st.caption(f"🌡️ 예측기온 산출 (롤링 {N_roll_c}년 평균): " + " | ".join(cap_parts_c))
 
         agg_cols_fut = (['판매량_계획'] if has_plan_future else []) + ([TARGET] if has_actual else []) \
             + ['예측_판매량_v1'] + (['예측_판매량_v2'] if has_cubic_split else []) + ['예측_판매량_v3']
