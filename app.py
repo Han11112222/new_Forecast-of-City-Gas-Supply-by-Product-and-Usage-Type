@@ -1757,7 +1757,8 @@ def main():
         st.markdown("""
         <div class="info-box">
         위 검증에서 사용한 <b>학습 연도·상품</b> 설정을 그대로 이어받아 미래 예측을 수행합니다.<br>
-        아래에서 <b>예상기온 산출 기준 연도</b>와 <b>시나리오 Δ°C</b>, <b>예측 기간</b>을 설정한 뒤 실행하세요.
+        아래에서 <b>예상기온 산출 기준 연도</b>와 <b>예측 기간</b>을 설정하세요.<br>
+        4가지 모델 예측을 비교한 뒤, 하단에서 <b>모델을 선택</b>하면 Best/Conservative 시나리오도 확인할 수 있습니다.
         </div>
         """, unsafe_allow_html=True)
 
@@ -1774,15 +1775,6 @@ def main():
             key="temp_avg_years_vf")
         st.caption("👆 미래(예측 기간)의 '예상기온'을 계산할 때 평균낼 연도. "
                    "학습 연도와 별개로 원하는 연도만 골라 월별 평균기온을 낼 수 있습니다.")
-
-        st.markdown('<div class="sub">🌡️ 시나리오 Δ°C (예상기온 보정)</div>', unsafe_allow_html=True)
-        sc1_vf, sc2_vf, sc3_vf = st.columns(3)
-        with sc1_vf:
-            d_norm_vf = st.number_input("Normal Δ°C", value=0.0, step=0.1, format="%.1f", key="d_norm_vf")
-        with sc2_vf:
-            d_best_vf = st.number_input("Best Δ°C", value=-1.0, step=0.1, format="%.1f", key="d_best_vf")
-        with sc3_vf:
-            d_cons_vf = st.number_input("Conservative Δ°C", value=1.0, step=0.1, format="%.1f", key="d_cons_vf")
 
         st.markdown('<div class="sub">📅 예측 기간</div>', unsafe_allow_html=True)
         pc1_vf, pc2_vf, pc3_vf, pc4_vf = st.columns(4)
@@ -1821,7 +1813,7 @@ def main():
             fut_months_vf = pd.date_range(start=f_start_vf, end=f_end_vf, freq="MS")
             fut_df_vf = pd.DataFrame({"연": fut_months_vf.year, "월": fut_months_vf.month})
 
-            # 예상기온 산출
+            # 예상기온 산출 (Normal = Δ0℃ 기준)
             monthly_avg_vf = temp_basis_pred.groupby("월")["월평균기온"].mean()
             if forecast_temp_df is not None:
                 fut_df_vf = fut_df_vf.merge(forecast_temp_df[["연", "월", "예상기온"]],
@@ -1843,103 +1835,167 @@ def main():
 
             st.caption(f"🌡️ 예상기온 산출 기준: {', '.join(str(y) for y in sorted(temp_avg_years_vf))}년 월별 평균")
 
-            scenarios_vf = {"Normal": d_norm_vf, "Best": d_best_vf, "Conservative": d_cons_vf}
-
-            # 단순N년평균 기준
+            # 단순N년평균 라벨
             naive_label_pred = f"단순{len(temp_avg_years_vf)}년평균"
-            naive_monthly_pred = temp_basis_pred.groupby("월")
+
+            fut_df_vf["Year_Month"] = fut_df_vf.apply(
+                lambda r: f"{int(r['연'])}-{int(r['월']):02d}", axis=1)
 
             for prod in vf_products:
                 y_train_pred = train_data_pred[prod].values.astype(float)
                 st.markdown(f'<div class="sub">📦 {prod}</div>', unsafe_allow_html=True)
-                _, r2_train_pred, model_pred, poly_pred = fit_poly3(x_train_pred, y_train_pred, x_train_pred)
-                st.caption(f"Poly-3 Train R² = {r2_train_pred:.4f} | {poly_eq_text(model_pred)}")
 
+                x_fut_normal = fut_df_vf["예상기온"].values.astype(float)
+
+                # ── 모델 1: Poly-3 단일 ──
+                y_p1, r2_tr_p, model_p, poly_p = fit_poly3(x_train_pred, y_train_pred, x_fut_normal)
+                y_p1 = np.clip(np.rint(y_p1).astype(np.int64), 0, None)
+
+                # ── 모델 2: 분리·3차식 ──
+                train_for_split_p = train_data_pred[["월평균기온", prod]].rename(
+                    columns={"월평균기온": "기온_split", prod: "공급량_split"})
+                models_p2, _, _ = fit_piecewise_seasonal_models(
+                    train_for_split_p, x_col="기온_split", y_col="공급량_split", degree=3)
+                has_p2 = models_p2["winter"] is not None and models_p2["summer"] is not None
+                y_p2 = np.clip(np.rint(predict_piecewise_seasonal(models_p2, x_fut_normal)).astype(np.int64), 0, None) \
+                    if has_p2 else np.full(len(x_fut_normal), np.nan)
+
+                # ── 모델 3: 분리·2차식 ──
+                models_p3, _, _ = fit_piecewise_seasonal_models(
+                    train_for_split_p, x_col="기온_split", y_col="공급량_split", degree=2)
+                has_p3 = models_p3["winter"] is not None and models_p3["summer"] is not None
+                y_p3 = np.clip(np.rint(predict_piecewise_seasonal(models_p3, x_fut_normal)).astype(np.int64), 0, None) \
+                    if has_p3 else np.full(len(x_fut_normal), np.nan)
+
+                # ── 모델 4: 단순N년평균 ──
                 naive_monthly_prod = temp_basis_pred.groupby("월")[prod].mean()
-                naive_vals_by_month_pred = {m: naive_monthly_prod.get(m, np.nan) for m in range(1, 13)}
+                y_p4 = fut_df_vf["월"].map(naive_monthly_prod).values.astype(float)
 
-                scenario_tables_vf = {}
-                for sname, delta in scenarios_vf.items():
-                    x_fut_vf = (fut_df_vf["예상기온"] + delta).values.astype(float)
-                    y_pred_vf_s, _, _, _ = fit_poly3(x_train_pred, y_train_pred, x_fut_vf)
-                    y_pred_vf_s = np.clip(np.rint(y_pred_vf_s).astype(np.int64), 0, None)
-                    tbl_vf = fut_df_vf[["연", "월"]].copy()
-                    tbl_vf["예상기온"] = fut_df_vf["예상기온"] + delta
-                    tbl_vf[prod] = y_pred_vf_s
-                    scenario_tables_vf[sname] = tbl_vf
+                # 예측 DataFrame 구성 (냉방용 구조)
+                pred_comp = fut_df_vf[["연", "월", "Year_Month", "예상기온"]].copy()
+                pred_comp["Poly-3 단일"] = y_p1
+                if has_p2:
+                    pred_comp["분리·3차식"] = y_p2
+                if has_p3:
+                    pred_comp["분리·2차식"] = y_p3
+                pred_comp[naive_label_pred] = np.round(y_p4).astype(float)
 
-                # 차트
-                fig_pred = go.Figure()
-                for y in sorted(years_all)[-3:]:
-                    act = merged[merged["연"] == y][["월", prod, "월평균기온"]].sort_values("월")
-                    if act.empty: continue
-                    fig_pred.add_trace(go.Scatter(
-                        x=[f"{int(m)}월" for m in act["월"]], y=act[prod],
-                        customdata=np.round(act["월평균기온"].values, 2),
-                        mode="lines+markers", name=f"{y} 실적",
-                        hovertemplate="%{x} %{y:,.0f} MJ<br>기온 %{customdata:.1f}℃<extra></extra>"))
-                for y in sorted(fut_df_vf["연"].unique()):
-                    tbl_n = scenario_tables_vf["Normal"]
-                    row = tbl_n[tbl_n["연"] == y].sort_values("월")
-                    fig_pred.add_trace(go.Scatter(
-                        x=[f"{int(m)}월" for m in row["월"]], y=row[prod],
-                        customdata=np.round(row["예상기온"].values, 2),
-                        mode="lines", name=f"예측(Normal) {y}", line=dict(dash="dash"),
-                        hovertemplate="%{x} %{y:,.0f} MJ<br>기온 %{customdata:.1f}℃<extra></extra>"))
-                fig_pred.add_trace(go.Scatter(
-                    x=[f"{m}월" for m in range(1, 13)],
-                    y=[naive_vals_by_month_pred[m] for m in range(1, 13)],
-                    mode="lines+markers",
-                    name=f"{naive_label_pred}({min(temp_avg_years_vf)}~{max(temp_avg_years_vf)})",
-                    line=dict(dash="dot", color="#7c3aed", width=2.5),
-                    marker=dict(symbol="diamond", size=7),
-                    hovertemplate="%{x} %{y:,.0f} MJ<extra></extra>"))
-                fig_pred.update_layout(**CHART_LAYOUT)
-                fig_pred.update_layout(
-                    title=f"{prod} — Poly-3 예측 (Train R²={r2_train_pred:.4f})",
-                    xaxis_title="월", yaxis_title="공급량 (MJ)", yaxis_rangemode="tozero",
-                    margin=dict(t=60, b=80), dragmode="pan",
-                    legend=dict(orientation="h", yanchor="top", y=-0.13,
-                                xanchor="center", x=0.5, font=dict(size=10)))
-                st.plotly_chart(fig_pred, use_container_width=True,
-                                config=dict(scrollZoom=True, displaylogo=False))
-                st.caption(f"🟣 점선(다이아몬드)이 '{naive_label_pred}' — 기온 회귀식 없이 최근 "
-                          f"{len(temp_avg_years_vf)}개년({', '.join(str(y) for y in sorted(temp_avg_years_vf))}) "
-                          "실적을 월별로 그대로 평균낸 참고선입니다.")
+                # 실제 실적이 있으면(예: 진행 중인 연도) 함께 표시
+                fut_years_set = set(fut_df_vf["연"].unique())
+                actual_in_fut = merged[merged["연"].isin(fut_years_set)][["연", "월", prod]].rename(
+                    columns={prod: "실적"})
+                if not actual_in_fut.empty:
+                    pred_comp = pred_comp.merge(actual_in_fut, on=["연", "월"], how="left")
+                has_actual_pred = "실적" in pred_comp.columns and pred_comp["실적"].notna().any()
 
-                # 시나리오별 테이블
-                st.markdown(f'<div class="sub">📋 {prod} — 시나리오별 월별 예측</div>',
+                # 차트용 컬럼
+                agg_cols_pred = (["실적"] if has_actual_pred else []) + ["Poly-3 단일"]
+                if has_p2:
+                    agg_cols_pred.append("분리·3차식")
+                if has_p3:
+                    agg_cols_pred.append("분리·2차식")
+                agg_cols_pred.append(naive_label_pred)
+
+                st.caption(f"Poly-3 Train R² = {r2_tr_p:.4f} | {poly_eq_text(model_p)}")
+
+                # 라인차트 (냉방용과 동일)
+                show_temp_pred = st.checkbox("🌡️ 예상기온 표시", key=f"pred_temp_{prod}")
+                render_line_chart(pred_comp, "Year_Month", agg_cols_pred, height=420,
+                                  secondary_col="예상기온" if show_temp_pred else None,
+                                  secondary_name="예상기온(℃)")
+
+                # 표에 표시할 항목 선택
+                st.markdown("**📌 표에 표시할 항목 선택** (아래 연도별·월별 표에만 반영됩니다)")
+                selected_pred = st.multiselect(
+                    "표시할 시리즈", options=agg_cols_pred, default=agg_cols_pred,
+                    key=f"pred_series_{prod}")
+                if not selected_pred:
+                    st.info("표시할 항목을 1개 이상 선택해주세요.")
+                    selected_pred = agg_cols_pred
+
+                pred_target_col = "실적" if has_actual_pred else "Poly-3 단일"
+                table_series_pred = _ensure_baseline_cols(selected_pred, pred_target_col, has_plan=False)
+
+                # 연도별 시나리오 합산
+                st.markdown("**📆 연도별 시나리오 합산**")
+                render_yearly_diff_table(pred_comp, pred_target_col, table_series_pred,
+                                         key_prefix=f"pred_yearly_{prod}",
+                                         target_label="실적" if has_actual_pred else "Poly-3 단일")
+
+                # 월별 시나리오
+                diff_pred = _build_diff_table(pred_comp, "Year_Month", pred_target_col,
+                                               table_series_pred,
+                                               target_label="실적" if has_actual_pred else "Poly-3 단일")
+                diff_pred = diff_pred.merge(
+                    pred_comp[["Year_Month", "예상기온"]], on="Year_Month", how="left")
+                cols_order_pred = ["Year_Month", "예상기온"] + [c for c in diff_pred.columns
+                                                                if c not in ("Year_Month", "예상기온")]
+                disp_pred = diff_pred[cols_order_pred]
+                st.markdown("**🗂️ 월별 시나리오**")
+                render_diff_table(disp_pred, "Year_Month",
+                                  target_col=pred_target_col if pred_target_col in disp_pred.columns else None,
+                                  key_prefix=f"pred_monthly_{prod}")
+
+                # CSV 다운로드
+                csv_pred = disp_pred.to_csv(index=False).encode("utf-8-sig")
+                st.download_button(f"📥 {prod} 예측 결과 다운로드", data=csv_pred,
+                                   file_name=f"공급량예측_{prod}.csv", mime="text/csv",
+                                   key=f"dl_pred_{prod}")
+
+                # ── 모델 선택 → Best / Conservative 시나리오 ──
+                st.markdown("---")
+                st.markdown(f'<div class="sub">🎯 {prod} — 모델 선택 시나리오 (Best / Conservative)</div>',
                             unsafe_allow_html=True)
-                compare_tbl_vf = fut_df_vf[["연", "월"]].copy()
-                for sname in scenarios_vf:
-                    compare_tbl_vf[sname] = scenario_tables_vf[sname][prod].values
-                compare_tbl_vf[naive_label_pred] = compare_tbl_vf["월"].map(naive_vals_by_month_pred)
-                sum_row_vf = {"연": "합계", "월": ""}
-                for sname in scenarios_vf:
-                    sum_row_vf[sname] = compare_tbl_vf[sname].sum()
-                sum_row_vf[naive_label_pred] = compare_tbl_vf[naive_label_pred].sum()
-                compare_full_vf = pd.concat([compare_tbl_vf, pd.DataFrame([sum_row_vf])], ignore_index=True)
-                render_centered_table(compare_full_vf, int_cols=list(scenarios_vf.keys()) + [naive_label_pred])
 
-                # 산점도
-                with st.expander(f"🔎 {prod} — 기온↔공급량 산점도 (학습 데이터)"):
-                    fig_sc_pred = _make_scatter_chart(x_train_pred, y_train_pred,
-                        f"{prod} — 기온 vs 공급량", "기온 (℃)", "공급량 (MJ)", r2_train_pred)
-                    st.plotly_chart(fig_sc_pred, use_container_width=True,
-                                    config=dict(scrollZoom=True, displaylogo=False))
+                model_options_sc = ["① Poly-3 단일"]
+                if has_p2:
+                    model_options_sc.append("② 분리·3차식(참고)")
+                if has_p3:
+                    model_options_sc.append("③ 분리·2차식")
+                model_options_sc.append(f"④ {naive_label_pred}")
 
-            # 엑셀 다운로드
-            buf_vf = BytesIO()
-            with pd.ExcelWriter(buf_vf, engine="openpyxl") as writer:
+                sc_model_sel = st.selectbox(
+                    "예측 모델 선택", options=model_options_sc, key=f"sc_model_{prod}")
+
+                sc1_vf, sc2_vf, sc3_vf = st.columns(3)
+                with sc1_vf:
+                    d_norm_vf = st.number_input("Normal Δ°C", value=0.0, step=0.1,
+                                                format="%.1f", key=f"d_norm_{prod}")
+                with sc2_vf:
+                    d_best_vf = st.number_input("Best Δ°C", value=-1.0, step=0.1,
+                                                format="%.1f", key=f"d_best_{prod}")
+                with sc3_vf:
+                    d_cons_vf = st.number_input("Conservative Δ°C", value=1.0, step=0.1,
+                                                format="%.1f", key=f"d_cons_{prod}")
+
+                scenarios_vf = {"Normal": d_norm_vf, "Best": d_best_vf, "Conservative": d_cons_vf}
+                scenario_results = {}
+
+                for sname, delta in scenarios_vf.items():
+                    x_sc = (fut_df_vf["예상기온"] + delta).values.astype(float)
+                    if sc_model_sel.startswith("①"):
+                        y_sc, _, _, _ = fit_poly3(x_train_pred, y_train_pred, x_sc)
+                        y_sc = np.clip(np.rint(y_sc).astype(np.int64), 0, None)
+                    elif sc_model_sel.startswith("②"):
+                        y_sc = predict_piecewise_seasonal(models_p2, x_sc)
+                        y_sc = np.clip(np.rint(y_sc).astype(np.int64), 0, None)
+                    elif sc_model_sel.startswith("③"):
+                        y_sc = predict_piecewise_seasonal(models_p3, x_sc)
+                        y_sc = np.clip(np.rint(y_sc).astype(np.int64), 0, None)
+                    else:  # ④ 단순N년평균 — 기온 보정 무관
+                        y_sc = np.round(y_p4).astype(np.int64)
+                    scenario_results[sname] = y_sc
+
+                sc_table = fut_df_vf[["연", "월"]].copy()
                 for sname in scenarios_vf:
-                    all_prods_vf = fut_df_vf[["연", "월"]].copy()
-                    for prod in vf_products:
-                        all_prods_vf[prod] = scenario_tables_vf[sname][prod].values if sname in scenario_tables_vf else 0
-                    all_prods_vf.to_excel(writer, sheet_name=sname, index=False)
-            st.download_button("⬇️ 예측 결과 엑셀 다운로드", data=buf_vf.getvalue(),
-                file_name="공급량_예측_결과.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="dl_pred_vf")
+                    sc_table[sname] = scenario_results[sname]
+                sum_row_sc = {"연": "합계", "월": ""}
+                for sname in scenarios_vf:
+                    sum_row_sc[sname] = int(sc_table[sname].sum())
+                sc_table_full = pd.concat([sc_table, pd.DataFrame([sum_row_sc])], ignore_index=True)
+                render_centered_table(sc_table_full, int_cols=list(scenarios_vf.keys()))
+
+                st.markdown("---")
 
     # ══════════════════════════════════════════
     # ── TAB 3: 공급량 예측 ──
