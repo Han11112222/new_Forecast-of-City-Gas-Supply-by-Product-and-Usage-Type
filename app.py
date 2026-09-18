@@ -1884,9 +1884,18 @@ def main():
                 pred_comp[naive_label_pred] = np.round(y_p4).astype(float)
 
                 # 실제 실적이 있으면(예: 진행 중인 연도) 함께 표시
-                fut_years_set = set(fut_df_vf["연"].unique())
-                actual_in_fut = merged[merged["연"].isin(fut_years_set)][["연", "월", prod]].rename(
-                    columns={prod: "실적"})
+                # supply_df에서 직접 가져옴 (merged는 기온 merge 필수이므로 기온 없는 달이 빠짐)
+                fut_years_set = set(int(y) for y in fut_df_vf["연"].unique())
+                if prod in supply_df.columns:
+                    _sup_tmp = supply_df[[prod]].copy()
+                    _sup_tmp["연"] = _sup_tmp.index.year
+                    _sup_tmp["월"] = _sup_tmp.index.month
+                    _sup_tmp = _sup_tmp[_sup_tmp["연"].isin(fut_years_set)]
+                    _sup_tmp = _sup_tmp[_sup_tmp[prod] > 0]  # 0인 행 제외 (데이터 없음)
+                    actual_in_fut = _sup_tmp[["연", "월", prod]].rename(columns={prod: "실적"})
+                else:
+                    actual_in_fut = merged[merged["연"].isin(fut_years_set)][["연", "월", prod]].rename(
+                        columns={prod: "실적"})
                 if not actual_in_fut.empty:
                     pred_comp = pred_comp.merge(actual_in_fut, on=["연", "월"], how="left")
                 has_actual_pred = "실적" in pred_comp.columns and pred_comp["실적"].notna().any()
