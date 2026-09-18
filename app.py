@@ -601,22 +601,23 @@ def render_line_chart(df, x_col, y_cols, height=420, title=None,
 
 
 def render_r2_mae_card(col, label, r2, mae, delta_r2=None):
-    """R²와 MAE를 같은 줄에 동일한 크기로 나란히 보여주는 카드. delta_r2가 있으면 그 아래 작게 개선폭 표시."""
+    """R²(위)와 MAE(아래)를 세로 배치하는 카드. 모든 카드에서 통일된 레이아웃."""
     delta_html = ""
     if delta_r2 is not None:
         color = "#16a34a" if delta_r2 >= 0 else "#dc2626"
         arrow = "↑" if delta_r2 >= 0 else "↓"
         sign = "+" if delta_r2 >= 0 else ""
-        delta_html = (f'<div style="font-size:0.85rem;color:{color};margin-top:4px;">'
-                      f'{arrow} {sign}{delta_r2:.4f}</div>')
+        delta_html = (f'<span style="font-size:0.82rem;color:{color};margin-left:0.4rem;">'
+                      f'{arrow} {sign}{delta_r2:.4f}</span>')
     col.markdown(f"""
 <div style="font-size:0.8rem;color:#666;margin-bottom:2px;">{label}</div>
-<div style="display:flex;align-items:baseline;gap:0.6rem;flex-wrap:wrap;">
-  <span style="font-size:1.9rem;font-weight:700;color:#1f2937;">{r2:.4f}</span>
-  <span style="font-size:1.9rem;font-weight:700;color:#166534;background-color:#dcfce7;
-               padding:0.05em 0.4em;border-radius:0.4em;">MAE {mae:,.0f}</span>
+<div style="font-size:1.9rem;font-weight:700;color:#1f2937;line-height:1.2;">
+  {r2:.4f}{delta_html}
 </div>
-{delta_html}
+<div style="margin-top:4px;">
+  <span style="font-size:1.4rem;font-weight:700;color:#166534;background-color:#dcfce7;
+               padding:0.1em 0.5em;border-radius:0.4em;">MAE {mae:,.0f}</span>
+</div>
 """, unsafe_allow_html=True)
 
 
