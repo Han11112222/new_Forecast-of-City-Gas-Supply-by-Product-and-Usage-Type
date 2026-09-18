@@ -1802,6 +1802,9 @@ def main():
             if len(train_data_pred) < 12:
                 st.error("학습 데이터가 12건 미만입니다. 학습 연도를 추가해주세요."); st.stop()
 
+            N_roll = len(temp_avg_years_vf)
+            all_temp_years = sorted(merged["연"].unique())
+
             temp_basis_pred = merged[merged["연"].isin(temp_avg_years_vf)]
             if temp_basis_pred.empty:
                 st.error("과거기온 연도에 해당하는 데이터가 없습니다."); st.stop()
@@ -1816,16 +1819,30 @@ def main():
             fut_months_vf = pd.date_range(start=f_start_vf, end=f_end_vf, freq="MS")
             fut_df_vf = pd.DataFrame({"연": fut_months_vf.year, "월": fut_months_vf.month})
 
-            # 예상기온 산출 (Normal = Δ0℃ 기준)
-            monthly_avg_vf = temp_basis_pred.groupby("월")["월평균기온"].mean()
+            # ── 롤링 N년 평균 기온 산출 ──
+            # 예측 연도 Y마다 직전 N년(Y-N ~ Y-1)의 월별 평균기온 사용
             if forecast_temp_df is not None:
                 fut_df_vf = fut_df_vf.merge(forecast_temp_df[["연", "월", "예상기온"]],
                     on=["연", "월"], how="left")
-                miss_vf = fut_df_vf["예상기온"].isna()
-                if miss_vf.any():
-                    fut_df_vf.loc[miss_vf, "예상기온"] = fut_df_vf.loc[miss_vf, "월"].map(monthly_avg_vf)
             else:
-                fut_df_vf["예상기온"] = fut_df_vf["월"].map(monthly_avg_vf)
+                fut_df_vf["예상기온"] = np.nan
+
+            rolling_year_map = {}
+            for pred_y in sorted(fut_df_vf["연"].unique()):
+                pred_y = int(pred_y)
+                ideal = list(range(pred_y - N_roll, pred_y))
+                used = [y for y in ideal if y in all_temp_years]
+                if len(used) < N_roll:
+                    before = [y for y in all_temp_years if y < pred_y]
+                    used = before[-N_roll:] if len(before) >= N_roll else (before if before else list(all_temp_years))
+                if not used:
+                    used = list(all_temp_years)
+                rolling_year_map[pred_y] = used
+
+                basis = merged[merged["연"].isin(used)]
+                monthly_avg = basis.groupby("월")["월평균기온"].mean()
+                mask = (fut_df_vf["연"] == pred_y) & fut_df_vf["예상기온"].isna()
+                fut_df_vf.loc[mask, "예상기온"] = fut_df_vf.loc[mask, "월"].map(monthly_avg)
 
             if fut_df_vf["예상기온"].isna().any():
                 st.warning("일부 월은 선택한 연도만으로는 예상기온을 정하지 못해, 전체 연도 평균으로 대신 채웠습니다.")
@@ -1836,7 +1853,9 @@ def main():
                 fallback_single_vf = merged["월평균기온"].mean()
                 fut_df_vf["예상기온"] = fut_df_vf["예상기온"].fillna(fallback_single_vf)
 
-            st.caption(f"🌡️ 예상기온 산출 기준: {', '.join(str(y) for y in sorted(temp_avg_years_vf))}년 월별 평균")
+            cap_parts = [f"{py}년→{','.join(str(y) for y in yrs)}년 평균"
+                         for py, yrs in sorted(rolling_year_map.items())]
+            st.caption(f"🌡️ 예상기온 산출 (롤링 {N_roll}년 평균): " + " | ".join(cap_parts))
 
             # 단순N년평균 라벨
             naive_label_pred = f"단순{len(temp_avg_years_vf)}년평균"
@@ -1870,9 +1889,15 @@ def main():
                 y_p3 = np.clip(np.rint(predict_piecewise_seasonal(models_p3, x_fut_normal)).astype(np.int64), 0, None) \
                     if has_p3 else np.full(len(x_fut_normal), np.nan)
 
-                # ── 모델 4: 단순N년평균 ──
-                naive_monthly_prod = temp_basis_pred.groupby("월")[prod].mean()
-                y_p4 = fut_df_vf["월"].map(naive_monthly_prod).values.astype(float)
+                # ── 모델 4: 단순N년평균 (롤링) ──
+                y_p4 = np.full(len(fut_df_vf), np.nan)
+                for _py in sorted(fut_df_vf["연"].unique()):
+                    _py = int(_py)
+                    _used = rolling_year_map.get(_py, list(all_temp_years))
+                    _basis = merged[merged["연"].isin(_used)]
+                    _monthly = _basis.groupby("월")[prod].mean()
+                    _mask = (fut_df_vf["연"] == _py)
+                    y_p4[_mask.values] = fut_df_vf.loc[_mask, "월"].map(_monthly).values
 
                 # 예측 DataFrame 구성 (냉방용 구조)
                 pred_comp = fut_df_vf[["연", "월", "Year_Month", "예상기온"]].copy()
@@ -1925,19 +1950,24 @@ def main():
                     st.info("표시할 항목을 1개 이상 선택해주세요.")
                     selected_pred = agg_cols_pred
 
-                pred_target_col = "실적" if has_actual_pred else "Poly-3 단일"
-                table_series_pred = _ensure_baseline_cols(selected_pred, pred_target_col, has_plan=False)
+                # 실적이 있으면 실적 기준 차이 표시, 없으면 예측값만 표시 (차이 컬럼 없음)
+                if has_actual_pred:
+                    pred_target_col = "실적"
+                    table_series_pred = _ensure_baseline_cols(selected_pred, pred_target_col, has_plan=False)
+                else:
+                    pred_target_col = None
+                    table_series_pred = [c for c in selected_pred if c in pred_comp.columns]
 
                 # 연도별 시나리오 합산
                 st.markdown("**📆 연도별 시나리오 합산**")
                 render_yearly_diff_table(pred_comp, pred_target_col, table_series_pred,
                                          key_prefix=f"pred_yearly_{prod}",
-                                         target_label="실적" if has_actual_pred else "Poly-3 단일")
+                                         target_label="실적" if has_actual_pred else None)
 
                 # 월별 시나리오
                 diff_pred = _build_diff_table(pred_comp, "Year_Month", pred_target_col,
                                                table_series_pred,
-                                               target_label="실적" if has_actual_pred else "Poly-3 단일")
+                                               target_label="실적" if has_actual_pred else None)
                 diff_pred = diff_pred.merge(
                     pred_comp[["Year_Month", "예상기온"]], on="Year_Month", how="left")
                 cols_order_pred = ["Year_Month", "예상기온"] + [c for c in diff_pred.columns
@@ -1945,7 +1975,7 @@ def main():
                 disp_pred = diff_pred[cols_order_pred]
                 st.markdown("**🗂️ 월별 시나리오**")
                 render_diff_table(disp_pred, "Year_Month",
-                                  target_col=pred_target_col if pred_target_col in disp_pred.columns else None,
+                                  target_col=pred_target_col if (pred_target_col and pred_target_col in disp_pred.columns) else None,
                                   key_prefix=f"pred_monthly_{prod}")
 
                 # CSV 다운로드
