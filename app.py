@@ -1788,6 +1788,9 @@ def main():
             pred_end_m_vf = st.selectbox("종료 월", list(range(1, 13)), index=11, key="pred_em_vf")
 
         if st.button("🧮 공급량 예측 실행", type="primary", key="btn_supply_pred_vf"):
+            st.session_state["supply_pred_run"] = True
+
+        if st.session_state.get("supply_pred_run", False):
             if not vf_products:
                 st.warning("예측할 상품을 선택해주세요 (상단 '검증 상품 선택')."); st.stop()
             if not vf_train_years:
