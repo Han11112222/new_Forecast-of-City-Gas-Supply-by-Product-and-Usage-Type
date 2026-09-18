@@ -1130,7 +1130,7 @@ def render_cooling_analysis():
 (여름, 겨울철 패턴 학습시 과대예측 발생 가능)
 ${poly_eq_str(cb, ib)}$
 
-**2. 동절기/하절기 분리 (HDD {WINTER_T:.0f}℃ / CDD {SUMMER_T:.0f}℃ 기준온도 참고)**  
+**2. 동절기/하절기 분리 (HDD {WINTER_T:.0f}℃ / CDD {SUMMER_T:.0f}℃ 기준온도 참고)**
 {item2_eq}
 
 **3. 추가 모델 (2차식)**
@@ -1553,8 +1553,9 @@ def main():
 
         st.caption("👆 학습 연도: Poly-3 모델(기온↔공급량 관계식)을 학습할 때 사용할 연도")
         _max_temp_year = max(years_all)
-        default_temp_years = [y for y in (_max_temp_year, _max_temp_year - 1, _max_temp_year - 2)
-                              if y in years_all]
+        # ★ 수정: 과거→최신 순서로 정렬 (sorted 추가)
+        default_temp_years = sorted([y for y in (_max_temp_year, _max_temp_year - 1, _max_temp_year - 2)
+                                     if y in years_all])
         if not default_temp_years:  # 혹시라도 y, y-1, y-2가 데이터에 하나도 없으면 안전하게 폴백
             default_temp_years = years_all[-3:] if len(years_all) >= 3 else years_all
         temp_avg_years = st.multiselect(
