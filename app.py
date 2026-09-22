@@ -1302,21 +1302,23 @@ ${poly_eq_str(cs, isu)}$
     # R²/MAE 카드 목록 구성 — MAE가 가장 낮은 카드에 자동으로 ✅ 표시
     metrics = []
     if has_plan_eval:
-        metrics.append({"key": "plan", "label": "기존 계획(판매량_계획)", "r2": r2_plan_eval,
+        metrics.append({"key": "plan", "col": "판매량_계획", "label": "기존 계획(판매량_계획)", "r2": r2_plan_eval,
                         "mae": mae_plan_eval, "delta": None})
-    metrics.append({"key": "base", "label": "기존 단일 3차식", "r2": r2_base_eval,
+    metrics.append({"key": "base", "col": "예측_판매량_v1", "label": "기존 단일 3차식", "r2": r2_base_eval,
                     "mae": mae_base_eval, "delta": None})
     if has_cubic_split:
-        metrics.append({"key": "cubic", "label": "분리·3차식 (참고)", "r2": r2_cubic_eval,
+        metrics.append({"key": "cubic", "col": "예측_판매량_v2", "label": "분리·3차식 (참고)", "r2": r2_cubic_eval,
                         "mae": mae_cubic_eval, "delta": r2_cubic_eval - r2_base_eval})
-    metrics.append({"key": "final", "label": "분리·2차식", "r2": r2_final_eval,
+    metrics.append({"key": "final", "col": "예측_판매량_v3", "label": "분리·2차식", "r2": r2_final_eval,
                     "mae": mae_final_eval, "delta": r2_final_eval - r2_base_eval})
 
     best_i = min(range(len(metrics)), key=lambda i: metrics[i]["mae"])
+    best_col_cool = metrics[best_i]["col"]
     mcols = st.columns(len(metrics))
     for i, m in enumerate(metrics):
         label = f'✅ {m["label"]}' if i == best_i else m["label"]
         render_r2_mae_card(mcols[i], label, m["r2"], m["mae"], delta_r2=m["delta"], is_best=(i == best_i))
+    st.caption(f"🟢 초록색으로 표시된 열이 MAE 최저(가장 정확한) 모델입니다: **{best_col_cool}**")
 
     # 차트는 항상 전체 시리즈 표시 — 플롯리 자체 범례 클릭으로 라인 표시/숨김
     show_temp_eval = st.checkbox("🌡️ 실제기온(전월16일부터 당월15일까지) 표시", key="eval_show_temp")
@@ -1336,11 +1338,13 @@ ${poly_eq_str(cs, isu)}$
     table_series_eval = _ensure_baseline_cols(selected_eval, TARGET, has_plan=has_plan_eval)
 
     st.markdown("**📆 연도별 실적 대비 차이 요약**")
-    yearly_table_eval = render_yearly_diff_table(monthly_eval_c, TARGET, table_series_eval, key_prefix="eval_yearly")
+    yearly_table_eval = render_yearly_diff_table(monthly_eval_c, TARGET, table_series_eval, key_prefix="eval_yearly",
+                                                  extra_highlight_col=best_col_cool)
 
     monthly_table_eval = _build_diff_table(monthly_eval_c, 'Year_Month', TARGET, table_series_eval)
     st.markdown("**🗂️ 월별 상세 비교**")
-    render_diff_table(monthly_table_eval, 'Year_Month', target_col=TARGET, key_prefix="eval_monthly")
+    render_diff_table(monthly_table_eval, 'Year_Month', target_col=TARGET, key_prefix="eval_monthly",
+                      extra_highlight_col=best_col_cool)
 
     dl_eval1, dl_eval2 = st.columns(2)
     meta_cool_eval = [
@@ -1499,7 +1503,8 @@ ${poly_eq_str(cs, isu)}$
 
         st.markdown("**📆 연도별 시나리오 합산**")
         yearly_future_c = render_yearly_diff_table(
-            future_df_c, future_target_col, table_series_fut, key_prefix="future_yearly")
+            future_df_c, future_target_col, table_series_fut, key_prefix="future_yearly",
+            extra_highlight_col=best_col_cool)
 
         monthly_future_diff = _build_diff_table(future_df_c, 'Year_Month', future_target_col, table_series_fut)
         monthly_future_diff = monthly_future_diff.merge(
@@ -1510,7 +1515,8 @@ ${poly_eq_str(cs, isu)}$
         st.markdown("**🗂️ 월별 시나리오**")
         render_diff_table(disp_future, 'Year_Month',
                           target_col=future_target_col if future_target_col in disp_future.columns else None,
-                          key_prefix="future_monthly")
+                          key_prefix="future_monthly",
+                          extra_highlight_col=best_col_cool)
 
         meta_cool_future = [
             f"데이터 학습연도: {min(train_years_c)}~{max(train_years_c)}년",
