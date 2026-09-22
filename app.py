@@ -1881,7 +1881,7 @@ def main():
     # ── TAB 2: 공급량 예측 검증 ──
     # ══════════════════════════════════════════
     elif selected_menu == menu_options[1]:
-        st.markdown("### 🔍 공급량 예측 검증")
+        st.markdown("### 🔍 [Part 1] 공급량 예측 검증")
         st.markdown("""
         <div class="info-box">
         선택한 <b>학습 연도</b>로 모델을 만들고, <b>검증 연도</b>의 <u>실제 기온</u>을 넣어
@@ -2102,7 +2102,12 @@ def main():
         # ══════════════════════════════════════
         # ── 검증 탭 내 미래 예측 섹션 ──
         # ══════════════════════════════════════
-        st.markdown("### 📈 미래 공급량 예측")
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown(
+            '<hr style="margin-top:0.5rem; margin-bottom:1.5rem; border:none; '
+            'border-top:4px solid #1a3c5e;">',
+            unsafe_allow_html=True)
+        st.markdown("### 📈 [Part 2] 미래 공급량 예측")
         st.markdown("""
         <div class="info-box">
         위 검증에서 사용한 <b>학습 연도·상품</b> 설정을 그대로 이어받아 미래 예측을 수행합니다.<br>
