@@ -457,6 +457,44 @@ def render_centered_table(df, float_cols=None, int_cols=None, pct_cols=None, ind
     st.markdown(show.to_html(index=index, classes="centered-table"), unsafe_allow_html=True)
 
 
+def render_centered_table_with_subtotal(df, float_cols=None, int_cols=None, pct_cols=None,
+                                        label_col=None, subtotal_label="소계"):
+    """
+    render_centered_table과 같은 포맷팅이지만, label_col 값이 subtotal_label인 마지막 행을
+    진한 배경(하이라이트)으로 강조해서 보여준다. (전체 상품 합계 등 소계 행 표시용)
+    """
+    float_cols = float_cols or []; int_cols = int_cols or []; pct_cols = pct_cols or []
+    show = df.copy()
+    for c in float_cols:
+        if c in show.columns:
+            show[c] = pd.to_numeric(show[c], errors="coerce").map(
+                lambda x: "" if pd.isna(x) else f"{x:.2f}")
+    for c in int_cols:
+        if c in show.columns:
+            show[c] = pd.to_numeric(show[c], errors="coerce").map(
+                lambda x: "" if pd.isna(x) else f"{int(round(x)):,}")
+    for c in pct_cols:
+        if c in show.columns:
+            show[c] = pd.to_numeric(show[c], errors="coerce").map(
+                lambda x: "" if pd.isna(x) else f"{x:.4f}")
+
+    cols = list(show.columns)
+    header_html = "".join(f"<th>{c}</th>" for c in cols)
+    rows_html = ""
+    for _, row in show.iterrows():
+        is_subtotal = label_col is not None and str(row.get(label_col, "")) == subtotal_label
+        style = (' style="background-color:#1e3a5f; color:white; font-weight:bold;"'
+                 if is_subtotal else "")
+        cells = "".join(f"<td>{row[c]}</td>" for c in cols)
+        rows_html += f"<tr{style}>{cells}</tr>"
+
+    st.markdown(f"""
+<table class="centered-table">
+<thead><tr>{header_html}</tr></thead>
+<tbody>{rows_html}</tbody>
+</table>""", unsafe_allow_html=True)
+
+
 def _render_highlight_table(df, headers=None, pct_cols=None):
     pct_cols = pct_cols or []
     cols = list(df.columns)
@@ -622,8 +660,9 @@ def render_line_chart(df, x_col, y_cols, height=420, title=None,
     st.plotly_chart(fig, use_container_width=True, config=dict(displaylogo=False))
 
 
-def render_r2_mae_card(col, label, r2, mae, delta_r2=None):
-    """R²(위)와 MAE(아래)를 세로 배치하는 카드. 모든 카드에서 통일된 레이아웃."""
+def render_r2_mae_card(col, label, r2, mae, delta_r2=None, is_best=False):
+    """R²(위)와 MAE(아래)를 세로 배치하는 카드. 모든 카드에서 통일된 레이아웃.
+    is_best=True면 카드 전체를 파란색 배경 박스로 감싸 최고 성과 모델임을 강조한다."""
     delta_html = ""
     if delta_r2 is not None:
         color = "#16a34a" if delta_r2 >= 0 else "#dc2626"
@@ -631,7 +670,12 @@ def render_r2_mae_card(col, label, r2, mae, delta_r2=None):
         sign = "+" if delta_r2 >= 0 else ""
         delta_html = (f'<span style="font-size:0.82rem;color:{color};margin-left:0.4rem;">'
                       f'{arrow} {sign}{delta_r2:.4f}</span>')
-    col.markdown(f"""
+    box_open, box_close = "", ""
+    if is_best:
+        box_open = ('<div style="background-color:#dbeafe;border:1.5px solid #60a5fa;'
+                    'border-radius:0.6rem;padding:0.7rem 0.8rem 0.5rem;">')
+        box_close = "</div>"
+    col.markdown(f"""{box_open}
 <div style="font-size:0.8rem;color:#666;margin-bottom:2px;">{label}</div>
 <div style="font-size:1.9rem;font-weight:700;color:#1f2937;line-height:1.2;">
   {r2:.4f}{delta_html}
@@ -640,7 +684,7 @@ def render_r2_mae_card(col, label, r2, mae, delta_r2=None):
   <span style="font-size:1.4rem;font-weight:700;color:#166534;background-color:#dcfce7;
                padding:0.1em 0.5em;border-radius:0.4em;">MAE {mae:,.0f}</span>
 </div>
-""", unsafe_allow_html=True)
+{box_close}""", unsafe_allow_html=True)
 
 
 # ==========================================
@@ -1272,7 +1316,7 @@ ${poly_eq_str(cs, isu)}$
     mcols = st.columns(len(metrics))
     for i, m in enumerate(metrics):
         label = f'✅ {m["label"]}' if i == best_i else m["label"]
-        render_r2_mae_card(mcols[i], label, m["r2"], m["mae"], delta_r2=m["delta"])
+        render_r2_mae_card(mcols[i], label, m["r2"], m["mae"], delta_r2=m["delta"], is_best=(i == best_i))
 
     # 차트는 항상 전체 시리즈 표시 — 플롯리 자체 범례 클릭으로 라인 표시/숨김
     show_temp_eval = st.checkbox("🌡️ 실제기온(전월16일부터 당월15일까지) 표시", key="eval_show_temp")
@@ -1557,16 +1601,28 @@ def render_sales_vs_supply():
     yearly_overview["_ord"] = yearly_overview["상품"].map(order_map)
     yearly_overview = yearly_overview.sort_values("_ord").drop(columns="_ord")
 
+    # 소계 행 — 공급량/판매량/차이는 단순 합산, 오차율은 합산값 기준으로 재계산
+    subtotal_row = {"상품": "소계"}
+    subtotal_row["공급량"] = yearly_overview["공급량"].sum()
+    subtotal_row["판매량"] = yearly_overview["판매량"].sum()
+    subtotal_row["차이(판매-공급)"] = subtotal_row["판매량"] - subtotal_row["공급량"]
+    subtotal_row["포함월수"] = ""
+    subtotal_row["오차율(%)"] = (
+        subtotal_row["차이(판매-공급)"] / subtotal_row["공급량"] * 100
+        if subtotal_row["공급량"] else np.nan)
+    yearly_overview_disp = pd.concat([yearly_overview, pd.DataFrame([subtotal_row])], ignore_index=True)
+
     st.markdown(f"**📊 {sv_year_sel}년 — 전체 상품 연간 요약**")
-    render_centered_table(
-        yearly_overview,
-        int_cols=["공급량", "판매량", "차이(판매-공급)", "포함월수"],
-        pct_cols=["오차율(%)"])
+    render_centered_table_with_subtotal(
+        yearly_overview_disp,
+        int_cols=["공급량", "판매량", "차이(판매-공급)"],
+        pct_cols=["오차율(%)"],
+        label_col="상품", subtotal_label="소계")
     st.caption("오차율(%) = (판매량 − 공급량) ÷ 공급량 × 100 — 양수면 판매량이 공급량보다 많다는 뜻입니다. "
                "'포함월수'가 12보다 적으면, 해당 연도 중 공급량 또는 판매량이 아직 반영되지 않은 달이 "
-               "있어 그 달은 집계에서 제외됐다는 뜻입니다.")
+               "있어 그 달은 집계에서 제외됐다는 뜻입니다. 맨 아래 '소계' 행은 전체 상품 합산 기준입니다.")
 
-    csv_overview = yearly_overview.to_csv(index=False).encode("utf-8-sig")
+    csv_overview = yearly_overview_disp.to_csv(index=False).encode("utf-8-sig")
     st.download_button(f"📥 {sv_year_sel}년 전체 상품 요약 다운로드", data=csv_overview,
                        file_name=f"판매량vs공급량_{sv_year_sel}_전체요약.csv", mime="text/csv",
                        key="dl_sv_overview")
@@ -1947,9 +2003,10 @@ def main():
                                if best_mae is not None and m["mae"] == best_mae), None)
             mcols_vf = st.columns(len(metrics_vf))
             for i, m in enumerate(metrics_vf):
-                lbl = f'✅ {m["label"]}' if (best_mae is not None and m["mae"] == best_mae) else m["label"]
+                is_best_vf = best_mae is not None and m["mae"] == best_mae
+                lbl = f'✅ {m["label"]}' if is_best_vf else m["label"]
                 if not np.isnan(m["r2"]) and not np.isnan(m["mae"]):
-                    render_r2_mae_card(mcols_vf[i], lbl, m["r2"], m["mae"], delta_r2=m["delta"])
+                    render_r2_mae_card(mcols_vf[i], lbl, m["r2"], m["mae"], delta_r2=m["delta"], is_best=is_best_vf)
                 else:
                     mcols_vf[i].markdown(f'<div style="font-size:0.8rem;color:#666;">{m["label"]}</div>'
                                          '<div style="color:#999;">데이터 부족</div>', unsafe_allow_html=True)
