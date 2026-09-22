@@ -970,7 +970,7 @@ def render_yearly_diff_table(monthly_raw_df, target_col, selected_cols, key_pref
     연도별 집계표 전용 렌더러. monthly_raw_df는 'Year'(또는 'Year_Month') + 선택 시리즈의
     "월별 원본값"을 담은 DataFrame이어야 한다 (차이 컬럼 없이).
 
-    MAE 토글 off: 연간 합계끼리의 순차이 (연간계획합 − 연간실적합) — 부호 있는 순차이.
+    MAE 토글 off: 연간 합계끼리의 순차이 (연간실적합 − 연간계획합) — 부호 있는 순차이.
     MAE 토글 on : 월별로 먼저 |차이|를 구한 뒤 연도별 평균 — 진짜 MAE(평균절대오차).
                   (연간 합계끼리의 차이에 단순히 절대값만 씌우면 +/-가 서로 상쇄된 순차이의
                   절대값이 나와서 실제 월별 오차 크기를 반영하지 못하므로, 반드시 월 단위에서
@@ -991,13 +991,13 @@ def render_yearly_diff_table(monthly_raw_df, target_col, selected_cols, key_pref
 
     yearly_raw = tmp.groupby('Year')[cols].sum().reset_index()
 
-    # MAE 모드용: 월별 signed 차이/오차율을 미리 계산
+    # MAE 모드용: 월별 signed 차이/오차율을 미리 계산 (실적 − 대상값 방향)
     monthly_diff, monthly_pct = {}, {}
     if has_target:
         for c in cols:
             if c == target_col:
                 continue
-            monthly_diff[c] = tmp[c] - tmp[target_col]
+            monthly_diff[c] = tmp[target_col] - tmp[c]
             with np.errstate(divide='ignore', invalid='ignore'):
                 monthly_pct[c] = np.where(tmp[target_col] != 0, monthly_diff[c] / tmp[target_col] * 100, np.nan)
 
@@ -1011,7 +1011,7 @@ def render_yearly_diff_table(monthly_raw_df, target_col, selected_cols, key_pref
             out[f'{c}\n{label}대비MAPE(%)'] = pd.Series(monthly_pct[c], index=tmp.index).abs() \
                 .groupby(tmp['Year']).mean().values
         else:
-            diff_val = yearly_raw[c] - yearly_raw[target_col]
+            diff_val = yearly_raw[target_col] - yearly_raw[c]
             out[f'{c}\n{label}대비차이'] = diff_val
             with np.errstate(divide='ignore', invalid='ignore'):
                 out[f'{c}\n{label}대비오차율(%)'] = np.where(
@@ -1041,6 +1041,7 @@ def _build_diff_table(df, x_col, target_col, selected_cols, target_label=None):
     컬럼 순서는 selected_cols 순서를 따르되, target_col(예: 실적)이 먼저 나온 컬럼들의
     차이/오차율은 target_col 바로 뒤로 몰아서 보여주고, target_col 이후에 나오는 컬럼들은
     (원본값 → 차이 → 오차율) 세트로 바로 이어 붙인다.
+    차이는 "target_col − 해당 컬럼" 방향(예: 실적 − 계획)으로 계산한다.
     예) selected_cols=[계획, 실적, v1, v2] → 계획, 실적, 계획_실적대비차이, 계획_실적대비오차율(%),
         v1, v1_실적대비차이, v1_실적대비오차율(%), v2, v2_실적대비차이, v2_실적대비오차율(%)
     target_label을 안 주면 SERIES_LABELS에서 target_col의 한글 라벨을 찾아 사용한다.
@@ -1054,7 +1055,7 @@ def _build_diff_table(df, x_col, target_col, selected_cols, target_label=None):
     target_seen = False
 
     def _add_diff(colname):
-        out[f'{colname}\n{label}대비차이'] = df[colname] - df[target_col]
+        out[f'{colname}\n{label}대비차이'] = df[target_col] - df[colname]
         with np.errstate(divide='ignore', invalid='ignore'):
             out[f'{colname}\n{label}대비오차율(%)'] = np.where(
                 df[target_col] != 0, out[f'{colname}\n{label}대비차이'] / df[target_col] * 100, np.nan)
@@ -1459,8 +1460,11 @@ ${poly_eq_str(cs, isu)}$
 
 def build_sales_vs_supply_long(supply_df, sales_df):
     """
-    상품별 공급량(Sheet1)과 판매량(Sheet3)을 월 단위로 매칭한 long-format DataFrame 생성.
-    반환: DataFrame[상품, Year, Month, Year_Month, 공급량, 판매량]
+    상품별 공급량(Sheet1, 단위 MJ)과 판매량(Sheet3, 단위 GJ)을 월 단위로 매칭한 long-format DataFrame 생성.
+    공급량은 MJ→GJ로 변환(÷1000)해 판매량과 단위를 맞춘다.
+    공급량이 아직 채워지지 않은 달(값 없음/0)은 판매량만 있어도 비교 대상에서 제외한다
+    (그렇지 않으면 "공급량 0" 행이 그대로 합계에 끼어들어 오차율이 왜곡됨).
+    반환: DataFrame[상품, Year, Month, Year_Month, 공급량(GJ), 판매량(GJ)]
     """
     sup = supply_df.copy()
     sup["Year"] = sup.index.year
@@ -1472,10 +1476,12 @@ def build_sales_vs_supply_long(supply_df, sales_df):
         if prod not in sup.columns or sales_col not in sales_df.columns:
             continue
         s_sup = sup[["Year", "Month", prod]].rename(columns={prod: "공급량"})
+        s_sup["공급량"] = s_sup["공급량"] / 1000.0  # MJ → GJ
         s_sal = sales_df[["연", "월", sales_col]].rename(
             columns={"연": "Year", "월": "Month", sales_col: "판매량"})
         merged_p = pd.merge(s_sup, s_sal, on=["Year", "Month"], how="inner")
-        merged_p = merged_p[(merged_p["공급량"] > 0) | (merged_p["판매량"] > 0)]
+        # 공급량·판매량 둘 다 실제 값이 있는 달만 비교 대상으로 삼는다 (한쪽만 0/미기재인 달 제외)
+        merged_p = merged_p[(merged_p["공급량"] > 0) & (merged_p["판매량"] > 0)]
         merged_p["상품"] = prod
         rows.append(merged_p)
     if not rows:
@@ -1489,9 +1495,11 @@ def render_sales_vs_supply():
     st.markdown("### ⚖️ 판매량 vs 공급량")
     st.markdown("""
     <div class="info-box">
-    <b>공급량</b>(Sheet1, 상품별 분배)과 <b>판매량</b>(Sheet3, 상품별판매량 실적)을 상품별·월별로 비교합니다.<br>
+    <b>공급량</b>(Sheet1, 상품별 분배 · 단위 MJ→GJ 환산)과 <b>판매량</b>(Sheet3, 상품별판매량 실적 · 단위 GJ)을
+    상품별·월별로 비교합니다.<br>
     공급량은 자가소비·손실분 등이 포함된 총 공급 물량, 판매량은 실제 고객에게 청구되는 물량이라
-    구조적으로 차이가 날 수 있습니다. (수송용은 CNG만 매칭, BIO가스는 제외)
+    구조적으로 차이가 날 수 있습니다. (수송용은 CNG만 매칭, BIO가스는 제외)<br>
+    ※ 공급량이 아직 반영되지 않은 달(예: 최근월 상품별 분배 미확정)은 판매량이 있어도 비교에서 제외됩니다.
     </div>
     """, unsafe_allow_html=True)
 
@@ -1510,8 +1518,10 @@ def render_sales_vs_supply():
     sv_years_all = sorted(sv_long["Year"].unique(), reverse=True)
     sv_year_sel = st.selectbox("📆 요약 연도 선택", options=sv_years_all, key="sv_year_sel")
 
-    yearly_overview = sv_long[sv_long["Year"] == sv_year_sel].groupby("상품")[["공급량", "판매량"]] \
-        .sum().reset_index()
+    sv_year_df = sv_long[sv_long["Year"] == sv_year_sel]
+    yearly_overview = sv_year_df.groupby("상품")[["공급량", "판매량"]].sum().reset_index()
+    n_months = sv_year_df.groupby("상품").size().rename("포함월수").reset_index()
+    yearly_overview = yearly_overview.merge(n_months, on="상품", how="left")
     yearly_overview["차이(판매-공급)"] = yearly_overview["판매량"] - yearly_overview["공급량"]
     with np.errstate(divide="ignore", invalid="ignore"):
         yearly_overview["오차율(%)"] = np.where(
@@ -1525,9 +1535,11 @@ def render_sales_vs_supply():
     st.markdown(f"**📊 {sv_year_sel}년 — 전체 상품 연간 요약**")
     render_centered_table(
         yearly_overview,
-        int_cols=["공급량", "판매량", "차이(판매-공급)"],
+        int_cols=["공급량", "판매량", "차이(판매-공급)", "포함월수"],
         pct_cols=["오차율(%)"])
-    st.caption("오차율(%) = (판매량 − 공급량) ÷ 공급량 × 100 — 양수면 판매량이 공급량보다 많다는 뜻입니다.")
+    st.caption("오차율(%) = (판매량 − 공급량) ÷ 공급량 × 100 — 양수면 판매량이 공급량보다 많다는 뜻입니다. "
+               "'포함월수'가 12보다 적으면, 해당 연도 중 공급량 또는 판매량이 아직 반영되지 않은 달이 "
+               "있어 그 달은 집계에서 제외됐다는 뜻입니다.")
 
     csv_overview = yearly_overview.to_csv(index=False).encode("utf-8-sig")
     st.download_button(f"📥 {sv_year_sel}년 전체 상품 요약 다운로드", data=csv_overview,
