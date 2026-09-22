@@ -44,6 +44,17 @@ SUPPLY_TITLE_VARIANTS = ["상품별 분배", "상품별분배"]
 # ── 판매량 상품 매핑 (Sheet 3 → Sheet 1 이름) ──
 SALES_TO_SUPPLY_NAME = {"냉방용": "냉난방공조용"}  # Sheet 3에서 '냉방용' = Sheet 1 '냉난방공조용'
 
+# ── 공급량(Sheet1) → 판매량(Sheet3) 상품명 매핑 (판매량 vs 공급량 비교 탭용) ──
+# Sheet3 실제 컬럼: 연,월,취사용,개별난방용,중앙난방용,자가열전용,일반용,업무난방용,
+#                   냉방용,산업용,수송용(CNG),수송용(BIO),열병합용,연료전지용,열전용설비용,주한미군
+SUPPLY_TO_SALES_NAME = {
+    "취사용": "취사용", "개별난방용": "개별난방용", "중앙난방용": "중앙난방용", "자가열전용": "자가열전용",
+    "일반용": "일반용", "냉난방공조용": "냉방용", "업무난방용": "업무난방용", "산업용": "산업용",
+    "수송용": "수송용(CNG)",  # 공급량 Sheet1의 '수송용'은 BIO가스가 별도 행이라 CNG만 매칭
+    "열병합용": "열병합용", "연료전지용": "연료전지용",
+    "열전용설비용": "열전용설비용", "주한미군": "주한미군",
+}
+
 MONTH_KR = [f"{m}월" for m in range(1, 13)]
 
 # ══════════════════════════════════════════════
@@ -543,6 +554,8 @@ LINE_COLORS = {
     '예측_판매량_v3':      "#8e44ad",
     '판매량_계획':         "#f1948a",
     '검침기온':           "#059669",
+    '공급량':             "#1f4e9c",
+    '판매량':             "#dc2626",
 }
 
 SERIES_LABELS = {
@@ -1441,6 +1454,131 @@ ${poly_eq_str(cs, isu)}$
 
 
 # ══════════════════════════════════════════════
+# 판매량 vs 공급량 — Tab 5 전용
+# ══════════════════════════════════════════════
+
+def build_sales_vs_supply_long(supply_df, sales_df):
+    """
+    상품별 공급량(Sheet1)과 판매량(Sheet3)을 월 단위로 매칭한 long-format DataFrame 생성.
+    반환: DataFrame[상품, Year, Month, Year_Month, 공급량, 판매량]
+    """
+    sup = supply_df.copy()
+    sup["Year"] = sup.index.year
+    sup["Month"] = sup.index.month
+    sup = sup.reset_index(drop=True)
+
+    rows = []
+    for prod, sales_col in SUPPLY_TO_SALES_NAME.items():
+        if prod not in sup.columns or sales_col not in sales_df.columns:
+            continue
+        s_sup = sup[["Year", "Month", prod]].rename(columns={prod: "공급량"})
+        s_sal = sales_df[["연", "월", sales_col]].rename(
+            columns={"연": "Year", "월": "Month", sales_col: "판매량"})
+        merged_p = pd.merge(s_sup, s_sal, on=["Year", "Month"], how="inner")
+        merged_p = merged_p[(merged_p["공급량"] > 0) | (merged_p["판매량"] > 0)]
+        merged_p["상품"] = prod
+        rows.append(merged_p)
+    if not rows:
+        return pd.DataFrame(columns=["상품", "Year", "Month", "공급량", "판매량"])
+    out = pd.concat(rows, ignore_index=True)
+    out["Year_Month"] = out.apply(lambda r: f"{int(r['Year'])}-{int(r['Month']):02d}", axis=1)
+    return out
+
+
+def render_sales_vs_supply():
+    st.markdown("### ⚖️ 판매량 vs 공급량")
+    st.markdown("""
+    <div class="info-box">
+    <b>공급량</b>(Sheet1, 상품별 분배)과 <b>판매량</b>(Sheet3, 상품별판매량 실적)을 상품별·월별로 비교합니다.<br>
+    공급량은 자가소비·손실분 등이 포함된 총 공급 물량, 판매량은 실제 고객에게 청구되는 물량이라
+    구조적으로 차이가 날 수 있습니다. (수송용은 CNG만 매칭, BIO가스는 제외)
+    </div>
+    """, unsafe_allow_html=True)
+
+    supply_df, err1 = load_sheet1_supply()
+    sales_df_raw, err3 = load_sheet3_sales()
+    if err1 or err3:
+        st.error("공급량 또는 판매량 데이터를 불러오지 못했습니다.")
+        st.stop()
+
+    sv_long = build_sales_vs_supply_long(supply_df, sales_df_raw)
+    if sv_long.empty:
+        st.warning("공급량-판매량 매칭 데이터가 없습니다.")
+        st.stop()
+
+    # ── 전체 상품 연간 요약 ──
+    sv_years_all = sorted(sv_long["Year"].unique(), reverse=True)
+    sv_year_sel = st.selectbox("📆 요약 연도 선택", options=sv_years_all, key="sv_year_sel")
+
+    yearly_overview = sv_long[sv_long["Year"] == sv_year_sel].groupby("상품")[["공급량", "판매량"]] \
+        .sum().reset_index()
+    yearly_overview["차이(판매-공급)"] = yearly_overview["판매량"] - yearly_overview["공급량"]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        yearly_overview["오차율(%)"] = np.where(
+            yearly_overview["공급량"] != 0,
+            yearly_overview["차이(판매-공급)"] / yearly_overview["공급량"] * 100, np.nan)
+    # PRODUCT_LIST 순서대로 정렬 (오차율 큰 순으로 보고 싶으면 아래 sort_values 주석 해제)
+    order_map = {p: i for i, p in enumerate(PRODUCT_LIST)}
+    yearly_overview["_ord"] = yearly_overview["상품"].map(order_map)
+    yearly_overview = yearly_overview.sort_values("_ord").drop(columns="_ord")
+
+    st.markdown(f"**📊 {sv_year_sel}년 — 전체 상품 연간 요약**")
+    render_centered_table(
+        yearly_overview,
+        int_cols=["공급량", "판매량", "차이(판매-공급)"],
+        pct_cols=["오차율(%)"])
+    st.caption("오차율(%) = (판매량 − 공급량) ÷ 공급량 × 100 — 양수면 판매량이 공급량보다 많다는 뜻입니다.")
+
+    csv_overview = yearly_overview.to_csv(index=False).encode("utf-8-sig")
+    st.download_button(f"📥 {sv_year_sel}년 전체 상품 요약 다운로드", data=csv_overview,
+                       file_name=f"판매량vs공급량_{sv_year_sel}_전체요약.csv", mime="text/csv",
+                       key="dl_sv_overview")
+
+    # ── 상품별 상세 비교 ──
+    st.markdown("---")
+    st.markdown("**🔍 상품별 상세 비교**")
+
+    sv_products = [p for p in PRODUCT_LIST if p in sv_long["상품"].unique()]
+    sv_prod_sel = st.selectbox("상품 선택", options=sv_products, key="sv_prod_sel")
+
+    prod_df = sv_long[sv_long["상품"] == sv_prod_sel].sort_values(["Year", "Month"]).reset_index(drop=True)
+    sv_years_avail = sorted(prod_df["Year"].unique())
+    sv_year_range = st.multiselect(
+        "연도 선택 (비워두면 전체 기간)", options=sv_years_avail,
+        default=sv_years_avail, key="sv_year_range")
+    prod_df_f = prod_df[prod_df["Year"].isin(sv_year_range)] if sv_year_range else prod_df
+    if prod_df_f.empty:
+        st.warning("선택한 조건에 해당하는 데이터가 없습니다.")
+        st.stop()
+
+    render_line_chart(prod_df_f, "Year_Month", ["공급량", "판매량"], height=420)
+    st.caption("🔵 공급량 · 🔴 판매량 — 범례 클릭 시 라인 표시/숨김")
+
+    table_series_sv = ["공급량", "판매량"]
+
+    st.markdown("**📆 연도별 요약 (공급량 대비 판매량 차이)**")
+    yearly_table_sv = render_yearly_diff_table(
+        prod_df_f, "공급량", table_series_sv,
+        key_prefix=f"sv_yearly_{sv_prod_sel}", target_label="공급량")
+
+    monthly_diff_sv = _build_diff_table(prod_df_f, "Year_Month", "공급량", table_series_sv, target_label="공급량")
+    st.markdown("**🗂️ 월별 상세 비교**")
+    render_diff_table(monthly_diff_sv, "Year_Month", target_col="공급량", key_prefix=f"sv_monthly_{sv_prod_sel}")
+
+    dl_sv1, dl_sv2 = st.columns(2)
+    with dl_sv1:
+        csv_sv_yearly = yearly_table_sv.to_csv(index=False).encode("utf-8-sig")
+        st.download_button(f"📥 {sv_prod_sel} 연도별 요약 다운로드", data=csv_sv_yearly,
+                           file_name=f"판매량vs공급량_{sv_prod_sel}_연도별.csv", mime="text/csv",
+                           key=f"dl_sv_yearly_{sv_prod_sel}")
+    with dl_sv2:
+        csv_sv_monthly = monthly_diff_sv.to_csv(index=False).encode("utf-8-sig")
+        st.download_button(f"📥 {sv_prod_sel} 월별 상세 다운로드", data=csv_sv_monthly,
+                           file_name=f"판매량vs공급량_{sv_prod_sel}_월별.csv", mime="text/csv",
+                           key=f"dl_sv_monthly_{sv_prod_sel}")
+
+
+# ══════════════════════════════════════════════
 # 메인
 # ══════════════════════════════════════════════
 
@@ -1475,6 +1613,7 @@ def main():
             "🔍 공급량 예측 검증",
             "📈 공급량 예측",
             "🧊 판매량 예측 (냉방용)",
+            "⚖️ 판매량 vs 공급량",
         ]
         selected_menu = st.radio(
             "분석 메뉴", options=menu_options,
@@ -2402,6 +2541,12 @@ def main():
     # ══════════════════════════════════════════
     elif selected_menu == menu_options[3]:
         render_cooling_analysis()
+
+    # ══════════════════════════════════════════
+    # ── TAB 5: 판매량 vs 공급량 ──
+    # ══════════════════════════════════════════
+    elif selected_menu == menu_options[4]:
+        render_sales_vs_supply()
 
 
 def _parse_uploaded_temp(uploaded_file):
