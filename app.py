@@ -601,8 +601,8 @@ LINE_COLORS = {
     '예측_판매량_v3':      "#8e44ad",
     '판매량_계획':         "#f1948a",
     '검침기온':           "#059669",
-    '공급량':             "#1f4e9c",
-    '판매량':             "#dc2626",
+    '공급량':             "#1e3a8a",
+    '판매량':             "#38bdf8",
 }
 
 SERIES_LABELS = {
@@ -1645,7 +1645,7 @@ def render_sales_vs_supply():
         st.stop()
 
     render_line_chart(prod_df_f, "Year_Month", ["공급량", "판매량"], height=420)
-    st.caption("🔵 공급량 · 🔴 판매량 — 범례 클릭 시 라인 표시/숨김")
+    st.caption("🔷 공급량 · 🔵 판매량 — 범례 클릭 시 라인 표시/숨김")
 
     # ── 월별(1~12월) 비교 — 선택 연도들을 같은 달끼리 묶어서 합산 비교 ──
     st.markdown("**📅 월별 비교 (선택 연도 합산)**")
