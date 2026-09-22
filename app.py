@@ -1931,6 +1931,8 @@ def main():
         for prod in vf_products:
             naive_by_product[prod] = train_data_vf.groupby("월")[prod].mean()
 
+        best_col_by_product = {}  # {상품: 검증 단계에서 MAE 최저였던 컬럼명} — Part2 하이라이트에 재사용
+
         # 모델 설명
         st.markdown("---")
         st.markdown(f"""
@@ -2001,6 +2003,7 @@ def main():
             best_mae = min(valid_maes) if valid_maes else None
             best_col_vf = next((m["col"] for m in metrics_vf
                                if best_mae is not None and m["mae"] == best_mae), None)
+            best_col_by_product[prod] = best_col_vf
             mcols_vf = st.columns(len(metrics_vf))
             for i, m in enumerate(metrics_vf):
                 is_best_vf = best_mae is not None and m["mae"] == best_mae
@@ -2398,12 +2401,20 @@ def main():
                     pred_target_col = None
                     table_series_pred = [c for c in selected_pred if c in pred_comp.columns]
 
+                # Part1에서 계산한 이 상품의 최고 모델을 Part2 표에도 동일하게 하이라이트
+                # (단순N년평균처럼 라벨의 연도 개수가 검증/예측 구간에서 다를 수 있어 보정)
+                best_col_for_future = best_col_by_product.get(prod)
+                if best_col_for_future and best_col_for_future.startswith("단순") \
+                        and best_col_for_future != naive_label_pred:
+                    best_col_for_future = naive_label_pred
+
                 # 연도별 시나리오 합산
                 st.markdown("**📆 연도별 시나리오 합산**")
                 render_yearly_diff_table(pred_comp, pred_target_col, table_series_pred,
                                          key_prefix=f"pred_yearly_{prod}",
                                          target_label="실적" if has_actual_pred else None,
-                                         show_mae=has_actual_pred)
+                                         show_mae=has_actual_pred,
+                                         extra_highlight_col=best_col_for_future)
 
                 # 월별 시나리오
                 diff_pred = _build_diff_table(pred_comp, "Year_Month", pred_target_col,
@@ -2418,7 +2429,8 @@ def main():
                 render_diff_table(disp_pred, "Year_Month",
                                   target_col=pred_target_col if (pred_target_col and pred_target_col in disp_pred.columns) else None,
                                   key_prefix=f"pred_monthly_{prod}",
-                                  show_mae=has_actual_pred)
+                                  show_mae=has_actual_pred,
+                                  extra_highlight_col=best_col_for_future)
 
                 # CSV 다운로드 — 재검증 시 동일 조건 복원을 위한 메타정보 헤더 포함
                 meta_pred = [
