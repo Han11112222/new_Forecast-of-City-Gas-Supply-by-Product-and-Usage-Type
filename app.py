@@ -44,15 +44,21 @@ SUPPLY_TITLE_VARIANTS = ["상품별 분배", "상품별분배"]
 # ── 판매량 상품 매핑 (Sheet 3 → Sheet 1 이름) ──
 SALES_TO_SUPPLY_NAME = {"냉방용": "냉난방공조용"}  # Sheet 3에서 '냉방용' = Sheet 1 '냉난방공조용'
 
-# ── 공급량(Sheet1) → 판매량(Sheet3) 상품명 매핑 (판매량 vs 공급량 비교 탭용) ──
-# Sheet3 실제 컬럼: 연,월,취사용,개별난방용,중앙난방용,자가열전용,일반용,업무난방용,
-#                   냉방용,산업용,수송용(CNG),수송용(BIO),열병합용,연료전지용,열전용설비용,주한미군
+# ── 공급량 → 판매량 상품 매핑 (Sheet 1 이름 → Sheet 3 이름) ──
 SUPPLY_TO_SALES_NAME = {
-    "취사용": "취사용", "개별난방용": "개별난방용", "중앙난방용": "중앙난방용", "자가열전용": "자가열전용",
-    "일반용": "일반용", "냉난방공조용": "냉방용", "업무난방용": "업무난방용", "산업용": "산업용",
-    "수송용": "수송용(CNG)",  # 공급량 Sheet1의 '수송용'은 BIO가스가 별도 행이라 CNG만 매칭
-    "열병합용": "열병합용", "연료전지용": "연료전지용",
-    "열전용설비용": "열전용설비용", "주한미군": "주한미군",
+    "취사용": "취사용",
+    "개별난방용": "개별난방용",
+    "중앙난방용": "중앙난방용",
+    "자가열전용": "자가열전용",
+    "일반용": "일반용",
+    "냉난방공조용": "냉방용",
+    "업무난방용": "업무난방용",
+    "산업용": "산업용",
+    "수송용": "수송용(CNG)",
+    "열병합용": "열병합용",
+    "연료전지용": "연료전지용",
+    "열전용설비용": "열전용설비용",
+    "주한미군": "주한미군",
 }
 
 MONTH_KR = [f"{m}월" for m in range(1, 13)]
@@ -430,15 +436,6 @@ def recommend_temp_period(merged_df, product, temp_daily, end_year=None,
 # 유틸
 # ══════════════════════════════════════════════
 
-def csv_with_meta(df, meta_lines):
-    """
-    CSV 파일 맨 위에 검증 조건(학습연도, 기온 기준연도 등) 몇 줄을 '#' 주석으로 붙여서 인코딩한다.
-    나중에 같은 조건으로 재검증할 때 이 CSV만 보고도 조건을 그대로 복원할 수 있게 하기 위함.
-    """
-    meta_text = "\n".join(f"# {line}" for line in meta_lines)
-    return (meta_text + "\n" + df.to_csv(index=False)).encode("utf-8-sig")
-
-
 def render_centered_table(df, float_cols=None, int_cols=None, pct_cols=None, index=False):
     float_cols = float_cols or []; int_cols = int_cols or []; pct_cols = pct_cols or []
     show = df.copy()
@@ -455,44 +452,6 @@ def render_centered_table(df, float_cols=None, int_cols=None, pct_cols=None, ind
             show[c] = pd.to_numeric(show[c], errors="coerce").map(
                 lambda x: "" if pd.isna(x) else f"{x:.4f}")
     st.markdown(show.to_html(index=index, classes="centered-table"), unsafe_allow_html=True)
-
-
-def render_centered_table_with_subtotal(df, float_cols=None, int_cols=None, pct_cols=None,
-                                        label_col=None, subtotal_label="소계"):
-    """
-    render_centered_table과 같은 포맷팅이지만, label_col 값이 subtotal_label인 마지막 행을
-    진한 배경(하이라이트)으로 강조해서 보여준다. (전체 상품 합계 등 소계 행 표시용)
-    """
-    float_cols = float_cols or []; int_cols = int_cols or []; pct_cols = pct_cols or []
-    show = df.copy()
-    for c in float_cols:
-        if c in show.columns:
-            show[c] = pd.to_numeric(show[c], errors="coerce").map(
-                lambda x: "" if pd.isna(x) else f"{x:.2f}")
-    for c in int_cols:
-        if c in show.columns:
-            show[c] = pd.to_numeric(show[c], errors="coerce").map(
-                lambda x: "" if pd.isna(x) else f"{int(round(x)):,}")
-    for c in pct_cols:
-        if c in show.columns:
-            show[c] = pd.to_numeric(show[c], errors="coerce").map(
-                lambda x: "" if pd.isna(x) else f"{x:.4f}")
-
-    cols = list(show.columns)
-    header_html = "".join(f"<th>{c}</th>" for c in cols)
-    rows_html = ""
-    for _, row in show.iterrows():
-        is_subtotal = label_col is not None and str(row.get(label_col, "")) == subtotal_label
-        style = (' style="background-color:#1e3a5f; color:white; font-weight:bold;"'
-                 if is_subtotal else "")
-        cells = "".join(f"<td>{row[c]}</td>" for c in cols)
-        rows_html += f"<tr{style}>{cells}</tr>"
-
-    st.markdown(f"""
-<table class="centered-table">
-<thead><tr>{header_html}</tr></thead>
-<tbody>{rows_html}</tbody>
-</table>""", unsafe_allow_html=True)
 
 
 def _render_highlight_table(df, headers=None, pct_cols=None):
@@ -601,8 +560,6 @@ LINE_COLORS = {
     '예측_판매량_v3':      "#8e44ad",
     '판매량_계획':         "#f1948a",
     '검침기온':           "#059669",
-    '공급량':             "#1e3a8a",
-    '판매량':             "#38bdf8",
 }
 
 SERIES_LABELS = {
@@ -660,9 +617,8 @@ def render_line_chart(df, x_col, y_cols, height=420, title=None,
     st.plotly_chart(fig, use_container_width=True, config=dict(displaylogo=False))
 
 
-def render_r2_mae_card(col, label, r2, mae, delta_r2=None, is_best=False):
-    """R²(위)와 MAE(아래)를 세로 배치하는 카드. 모든 카드에서 통일된 레이아웃.
-    is_best=True면 카드 전체를 파란색 배경 박스로 감싸 최고 성과 모델임을 강조한다."""
+def render_r2_mae_card(col, label, r2, mae, delta_r2=None):
+    """R²(위)와 MAE(아래)를 세로 배치하는 카드. 모든 카드에서 통일된 레이아웃."""
     delta_html = ""
     if delta_r2 is not None:
         color = "#16a34a" if delta_r2 >= 0 else "#dc2626"
@@ -670,12 +626,7 @@ def render_r2_mae_card(col, label, r2, mae, delta_r2=None, is_best=False):
         sign = "+" if delta_r2 >= 0 else ""
         delta_html = (f'<span style="font-size:0.82rem;color:{color};margin-left:0.4rem;">'
                       f'{arrow} {sign}{delta_r2:.4f}</span>')
-    box_open, box_close = "", ""
-    if is_best:
-        box_open = ('<div style="background-color:#dbeafe;border:1.5px solid #60a5fa;'
-                    'border-radius:0.6rem;padding:0.7rem 0.8rem 0.5rem;">')
-        box_close = "</div>"
-    col.markdown(f"""{box_open}
+    col.markdown(f"""
 <div style="font-size:0.8rem;color:#666;margin-bottom:2px;">{label}</div>
 <div style="font-size:1.9rem;font-weight:700;color:#1f2937;line-height:1.2;">
   {r2:.4f}{delta_html}
@@ -684,7 +635,7 @@ def render_r2_mae_card(col, label, r2, mae, delta_r2=None, is_best=False):
   <span style="font-size:1.4rem;font-weight:700;color:#166534;background-color:#dcfce7;
                padding:0.1em 0.5em;border-radius:0.4em;">MAE {mae:,.0f}</span>
 </div>
-{box_close}""", unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
 
 # ==========================================
@@ -947,7 +898,6 @@ _DIFF_TABLE_CSS = """
 .difftbl th.difftbl-x, .difftbl td.difftbl-x { background:#eef2f7 !important; font-weight:600; }
 .difftbl td.difftbl-x { text-align:center; }
 .difftbl th.difftbl-target, .difftbl td.difftbl-target { background:#dbeafe !important; font-weight:600; }
-.difftbl th.difftbl-best, .difftbl td.difftbl-best { background:#dcfce7 !important; font-weight:600; }
 .difftbl tr:hover td { background:#f8fafc; }
 </style>
 """
@@ -973,26 +923,20 @@ def _fmt_x_value(val):
     return str(val)
 
 
-def render_html_diff_table(df, x_col, target_col=None, extra_highlight_col=None):
+def render_html_diff_table(df, x_col, target_col=None):
     """
     표를 HTML 테이블로 렌더링한다 (st.dataframe은 헤더 줄바꿈을 지원하지 않아 텍스트가
     잘리는 문제가 있어, 컬럼명의 '\\n'을 <br>로 바꿔 풀네임을 2줄로 보여주기 위함).
     x_col(구분 열)과 target_col(실적 등 기준 열)은 배경색으로 하이라이트한다.
-    extra_highlight_col을 주면(예: MAE가 가장 낮은 모델명) 그 시리즈에 속한 원본값·차이·오차율
-    컬럼을 전부(녹색으로) 하이라이트한다 — 파생 컬럼명이 '시리즈명\\n라벨대비차이'처럼
-    줄바꿈으로 이어붙는 규칙이라, 그 접두사로 시작하는 컬럼을 모두 매칭한다.
     """
     cols = list(df.columns)
 
     def _cls(c):
-        classes = []
         if c == x_col:
-            classes.append("difftbl-x")
+            return ' class="difftbl-x"'
         if target_col and c == target_col:
-            classes.append("difftbl-target")
-        if extra_highlight_col and (c == extra_highlight_col or c.startswith(extra_highlight_col + "\n")):
-            classes.append("difftbl-best")
-        return f' class="{" ".join(classes)}"' if classes else ""
+            return ' class="difftbl-target"'
+        return ""
 
     hdr = "".join(f"<th{_cls(c)}>{c.replace(chr(10), '<br>')}</th>" for c in cols)
     body = ""
@@ -1010,12 +954,11 @@ def render_html_diff_table(df, x_col, target_col=None, extra_highlight_col=None)
 </div>""", unsafe_allow_html=True)
 
 
-def render_diff_table(df, x_col, target_col=None, key_prefix="tbl", show_mae=True, extra_highlight_col=None):
+def render_diff_table(df, x_col, target_col=None, key_prefix="tbl", show_mae=True):
     """
     비교표 렌더링 공통 헬퍼.
     - 좌측 상단에 'MAE 변환' 토글(체크박스)을 두고, 켜면 차이 컬럼을 절대값(MAE 스타일)으로 표시
     - x_col(구분 열)과 target_col(실적 등 기준 열)에 배경색 하이라이트 적용
-    - extra_highlight_col을 주면 해당 모델(시리즈) 컬럼도 별도 색으로 하이라이트
     - 컬럼명에 줄바꿈(\\n)이 들어간 긴 헤더는 HTML 테이블로 렌더링해 풀네임을 2줄로 보여준다.
     """
     if show_mae:
@@ -1023,15 +966,15 @@ def render_diff_table(df, x_col, target_col=None, key_prefix="tbl", show_mae=Tru
         disp = _apply_mae_toggle(df, x_col, use_mae)
     else:
         disp = df
-    render_html_diff_table(disp, x_col, target_col=target_col, extra_highlight_col=extra_highlight_col)
+    render_html_diff_table(disp, x_col, target_col=target_col)
 
 
-def render_yearly_diff_table(monthly_raw_df, target_col, selected_cols, key_prefix="tbl", target_label=None, show_mae=True, extra_highlight_col=None):
+def render_yearly_diff_table(monthly_raw_df, target_col, selected_cols, key_prefix="tbl", target_label=None, show_mae=True):
     """
     연도별 집계표 전용 렌더러. monthly_raw_df는 'Year'(또는 'Year_Month') + 선택 시리즈의
     "월별 원본값"을 담은 DataFrame이어야 한다 (차이 컬럼 없이).
 
-    MAE 토글 off: 연간 합계끼리의 순차이 (연간실적합 − 연간계획합) — 부호 있는 순차이.
+    MAE 토글 off: 연간 합계끼리의 순차이 (연간계획합 − 연간실적합) — 부호 있는 순차이.
     MAE 토글 on : 월별로 먼저 |차이|를 구한 뒤 연도별 평균 — 진짜 MAE(평균절대오차).
                   (연간 합계끼리의 차이에 단순히 절대값만 씌우면 +/-가 서로 상쇄된 순차이의
                   절대값이 나와서 실제 월별 오차 크기를 반영하지 못하므로, 반드시 월 단위에서
@@ -1052,15 +995,15 @@ def render_yearly_diff_table(monthly_raw_df, target_col, selected_cols, key_pref
 
     yearly_raw = tmp.groupby('Year')[cols].sum().reset_index()
 
-    # MAE 모드용: 월별 signed 차이/오차율을 미리 계산 (실적 − 대상값 방향, 오차율은 대상값 기준 %)
+    # MAE 모드용: 월별 signed 차이/오차율을 미리 계산
     monthly_diff, monthly_pct = {}, {}
     if has_target:
         for c in cols:
             if c == target_col:
                 continue
-            monthly_diff[c] = tmp[target_col] - tmp[c]
+            monthly_diff[c] = tmp[c] - tmp[target_col]
             with np.errstate(divide='ignore', invalid='ignore'):
-                monthly_pct[c] = np.where(tmp[c] != 0, monthly_diff[c] / tmp[c] * 100, np.nan)
+                monthly_pct[c] = np.where(tmp[target_col] != 0, monthly_diff[c] / tmp[target_col] * 100, np.nan)
 
     out = pd.DataFrame({'Year': yearly_raw['Year']})
     pending, target_seen = [], False
@@ -1072,11 +1015,11 @@ def render_yearly_diff_table(monthly_raw_df, target_col, selected_cols, key_pref
             out[f'{c}\n{label}대비MAPE(%)'] = pd.Series(monthly_pct[c], index=tmp.index).abs() \
                 .groupby(tmp['Year']).mean().values
         else:
-            diff_val = yearly_raw[target_col] - yearly_raw[c]
+            diff_val = yearly_raw[c] - yearly_raw[target_col]
             out[f'{c}\n{label}대비차이'] = diff_val
             with np.errstate(divide='ignore', invalid='ignore'):
                 out[f'{c}\n{label}대비오차율(%)'] = np.where(
-                    yearly_raw[c] != 0, diff_val / yearly_raw[c] * 100, np.nan)
+                    yearly_raw[target_col] != 0, diff_val / yearly_raw[target_col] * 100, np.nan)
 
     for c in cols:
         out[c] = yearly_raw[c]
@@ -1092,7 +1035,7 @@ def render_yearly_diff_table(monthly_raw_df, target_col, selected_cols, key_pref
         else:
             add_diff(c)
 
-    render_html_diff_table(out, 'Year', target_col=target_col, extra_highlight_col=extra_highlight_col)
+    render_html_diff_table(out, 'Year', target_col=target_col)
     return out
 
 
@@ -1102,7 +1045,6 @@ def _build_diff_table(df, x_col, target_col, selected_cols, target_label=None):
     컬럼 순서는 selected_cols 순서를 따르되, target_col(예: 실적)이 먼저 나온 컬럼들의
     차이/오차율은 target_col 바로 뒤로 몰아서 보여주고, target_col 이후에 나오는 컬럼들은
     (원본값 → 차이 → 오차율) 세트로 바로 이어 붙인다.
-    차이는 "target_col − 해당 컬럼" 방향(예: 실적 − 계획)으로 계산한다.
     예) selected_cols=[계획, 실적, v1, v2] → 계획, 실적, 계획_실적대비차이, 계획_실적대비오차율(%),
         v1, v1_실적대비차이, v1_실적대비오차율(%), v2, v2_실적대비차이, v2_실적대비오차율(%)
     target_label을 안 주면 SERIES_LABELS에서 target_col의 한글 라벨을 찾아 사용한다.
@@ -1116,10 +1058,10 @@ def _build_diff_table(df, x_col, target_col, selected_cols, target_label=None):
     target_seen = False
 
     def _add_diff(colname):
-        out[f'{colname}\n{label}대비차이'] = df[target_col] - df[colname]
+        out[f'{colname}\n{label}대비차이'] = df[colname] - df[target_col]
         with np.errstate(divide='ignore', invalid='ignore'):
             out[f'{colname}\n{label}대비오차율(%)'] = np.where(
-                df[colname] != 0, out[f'{colname}\n{label}대비차이'] / df[colname] * 100, np.nan)
+                df[target_col] != 0, out[f'{colname}\n{label}대비차이'] / df[target_col] * 100, np.nan)
 
     for c in cols:
         out[c] = df[c]
@@ -1302,23 +1244,21 @@ ${poly_eq_str(cs, isu)}$
     # R²/MAE 카드 목록 구성 — MAE가 가장 낮은 카드에 자동으로 ✅ 표시
     metrics = []
     if has_plan_eval:
-        metrics.append({"key": "plan", "col": "판매량_계획", "label": "기존 계획(판매량_계획)", "r2": r2_plan_eval,
+        metrics.append({"key": "plan", "label": "기존 계획(판매량_계획)", "r2": r2_plan_eval,
                         "mae": mae_plan_eval, "delta": None})
-    metrics.append({"key": "base", "col": "예측_판매량_v1", "label": "기존 단일 3차식", "r2": r2_base_eval,
+    metrics.append({"key": "base", "label": "기존 단일 3차식", "r2": r2_base_eval,
                     "mae": mae_base_eval, "delta": None})
     if has_cubic_split:
-        metrics.append({"key": "cubic", "col": "예측_판매량_v2", "label": "분리·3차식 (참고)", "r2": r2_cubic_eval,
+        metrics.append({"key": "cubic", "label": "분리·3차식 (참고)", "r2": r2_cubic_eval,
                         "mae": mae_cubic_eval, "delta": r2_cubic_eval - r2_base_eval})
-    metrics.append({"key": "final", "col": "예측_판매량_v3", "label": "분리·2차식", "r2": r2_final_eval,
+    metrics.append({"key": "final", "label": "분리·2차식", "r2": r2_final_eval,
                     "mae": mae_final_eval, "delta": r2_final_eval - r2_base_eval})
 
     best_i = min(range(len(metrics)), key=lambda i: metrics[i]["mae"])
-    best_col_cool = metrics[best_i]["col"]
     mcols = st.columns(len(metrics))
     for i, m in enumerate(metrics):
         label = f'✅ {m["label"]}' if i == best_i else m["label"]
-        render_r2_mae_card(mcols[i], label, m["r2"], m["mae"], delta_r2=m["delta"], is_best=(i == best_i))
-    st.caption(f"🟢 초록색으로 표시된 열이 MAE 최저(가장 정확한) 모델입니다: **{best_col_cool}**")
+        render_r2_mae_card(mcols[i], label, m["r2"], m["mae"], delta_r2=m["delta"])
 
     # 차트는 항상 전체 시리즈 표시 — 플롯리 자체 범례 클릭으로 라인 표시/숨김
     show_temp_eval = st.checkbox("🌡️ 실제기온(전월16일부터 당월15일까지) 표시", key="eval_show_temp")
@@ -1338,25 +1278,19 @@ ${poly_eq_str(cs, isu)}$
     table_series_eval = _ensure_baseline_cols(selected_eval, TARGET, has_plan=has_plan_eval)
 
     st.markdown("**📆 연도별 실적 대비 차이 요약**")
-    yearly_table_eval = render_yearly_diff_table(monthly_eval_c, TARGET, table_series_eval, key_prefix="eval_yearly",
-                                                  extra_highlight_col=best_col_cool)
+    yearly_table_eval = render_yearly_diff_table(monthly_eval_c, TARGET, table_series_eval, key_prefix="eval_yearly")
 
     monthly_table_eval = _build_diff_table(monthly_eval_c, 'Year_Month', TARGET, table_series_eval)
     st.markdown("**🗂️ 월별 상세 비교**")
-    render_diff_table(monthly_table_eval, 'Year_Month', target_col=TARGET, key_prefix="eval_monthly",
-                      extra_highlight_col=best_col_cool)
+    render_diff_table(monthly_table_eval, 'Year_Month', target_col=TARGET, key_prefix="eval_monthly")
 
     dl_eval1, dl_eval2 = st.columns(2)
-    meta_cool_eval = [
-        f"데이터 학습연도: {min(train_years_c)}~{max(train_years_c)}년",
-        f"검증 연도: {min(eval_years_c)}~{max(eval_years_c)}년",
-    ]
     with dl_eval1:
-        csv_yearly_eval = csv_with_meta(yearly_table_eval, meta_cool_eval)
+        csv_yearly_eval = yearly_table_eval.to_csv(index=False).encode('utf-8-sig')
         st.download_button("📥 연도별 요약 다운로드", data=csv_yearly_eval,
                            file_name="냉방용_연도별요약.csv", mime="text/csv", key="dl_eval_yearly")
     with dl_eval2:
-        csv_monthly_eval = csv_with_meta(monthly_table_eval, meta_cool_eval)
+        csv_monthly_eval = monthly_table_eval.to_csv(index=False).encode('utf-8-sig')
         st.download_button("📥 월별 상세 다운로드", data=csv_monthly_eval,
                            file_name="냉방용_과거적합도_검증리포트.csv", mime="text/csv", key="dl_eval_monthly")
 
@@ -1503,8 +1437,7 @@ ${poly_eq_str(cs, isu)}$
 
         st.markdown("**📆 연도별 시나리오 합산**")
         yearly_future_c = render_yearly_diff_table(
-            future_df_c, future_target_col, table_series_fut, key_prefix="future_yearly",
-            extra_highlight_col=best_col_cool)
+            future_df_c, future_target_col, table_series_fut, key_prefix="future_yearly")
 
         monthly_future_diff = _build_diff_table(future_df_c, 'Year_Month', future_target_col, table_series_fut)
         monthly_future_diff = monthly_future_diff.merge(
@@ -1515,14 +1448,9 @@ ${poly_eq_str(cs, isu)}$
         st.markdown("**🗂️ 월별 시나리오**")
         render_diff_table(disp_future, 'Year_Month',
                           target_col=future_target_col if future_target_col in disp_future.columns else None,
-                          key_prefix="future_monthly",
-                          extra_highlight_col=best_col_cool)
+                          key_prefix="future_monthly")
 
-        meta_cool_future = [
-            f"데이터 학습연도: {min(train_years_c)}~{max(train_years_c)}년",
-            f"과거 기온 평균 기준: 최근 {y_years_c}년(실측 우선, 부족분 롤링 평균)",
-        ]
-        csv_future_c = csv_with_meta(disp_future, meta_cool_future)
+        csv_future_c = disp_future.to_csv(index=False).encode('utf-8-sig')
         st.download_button("📥 냉방용 미래 시나리오 다운로드", data=csv_future_c,
                            file_name="냉방용_미래시나리오.csv", mime="text/csv")
     else:
@@ -1530,170 +1458,125 @@ ${poly_eq_str(cs, isu)}$
 
 
 # ══════════════════════════════════════════════
-# 판매량 vs 공급량 — Tab 5 전용
+# Tab 5: 판매량 vs 공급량
 # ══════════════════════════════════════════════
 
 def build_sales_vs_supply_long(supply_df, sales_df):
     """
-    상품별 공급량(Sheet1, 단위 MJ)과 판매량(Sheet3, 단위 GJ)을 월 단위로 매칭한 long-format DataFrame 생성.
-    공급량은 MJ→GJ로 변환(÷1000)해 판매량과 단위를 맞춘다.
-    공급량이 아직 채워지지 않은 달(값 없음/0)은 판매량만 있어도 비교 대상에서 제외한다
-    (그렇지 않으면 "공급량 0" 행이 그대로 합계에 끼어들어 오차율이 왜곡됨).
-    반환: DataFrame[상품, Year, Month, Year_Month, 공급량(GJ), 판매량(GJ)]
+    공급량(Sheet1, MJ→GJ) × 판매량(Sheet3, GJ)을 상품별로 매칭해 long-format DF 생성.
+    반환: DataFrame(columns=[Year, Month, 상품, 공급량, 판매량])
     """
-    sup = supply_df.copy()
-    sup["Year"] = sup.index.year
-    sup["Month"] = sup.index.month
-    sup = sup.reset_index(drop=True)
-
+    # 공급량: wide → long, MJ→GJ
+    flat = supply_df.copy()
+    flat["Year"] = flat.index.year
+    flat["Month"] = flat.index.month
+    flat = flat.reset_index(drop=True)
     rows = []
-    for prod, sales_col in SUPPLY_TO_SALES_NAME.items():
-        if prod not in sup.columns or sales_col not in sales_df.columns:
+    for prod in PRODUCT_LIST:
+        if prod not in flat.columns:
             continue
-        s_sup = sup[["Year", "Month", prod]].rename(columns={prod: "공급량"})
-        s_sup["공급량"] = s_sup["공급량"] / 1000.0  # MJ → GJ
-        s_sal = sales_df[["연", "월", sales_col]].rename(
-            columns={"연": "Year", "월": "Month", sales_col: "판매량"})
-        merged_p = pd.merge(s_sup, s_sal, on=["Year", "Month"], how="inner")
-        # 공급량·판매량 둘 다 실제 값이 있는 달만 비교 대상으로 삼는다 (한쪽만 0/미기재인 달 제외)
-        merged_p = merged_p[(merged_p["공급량"] > 0) & (merged_p["판매량"] > 0)]
-        merged_p["상품"] = prod
-        rows.append(merged_p)
-    if not rows:
-        return pd.DataFrame(columns=["상품", "Year", "Month", "공급량", "판매량"])
-    out = pd.concat(rows, ignore_index=True)
-    out["Year_Month"] = out.apply(lambda r: f"{int(r['Year'])}-{int(r['Month']):02d}", axis=1)
-    return out
+        sales_name = SUPPLY_TO_SALES_NAME.get(prod, prod)
+        if sales_name not in sales_df.columns:
+            continue
+        for _, r in flat.iterrows():
+            y, m = int(r["Year"]), int(r["Month"])
+            supply_gj = r[prod] / 1000.0  # MJ → GJ
+            sale_row = sales_df[(sales_df["연"] == y) & (sales_df["월"] == m)]
+            sale_val = sale_row[sales_name].values[0] if len(sale_row) > 0 else np.nan
+            rows.append({"Year": y, "Month": m, "상품": prod,
+                         "공급량": supply_gj, "판매량": sale_val})
+    return pd.DataFrame(rows)
 
 
-def render_sales_vs_supply():
-    st.markdown("### ⚖️ 판매량 vs 공급량")
+def render_sales_vs_supply(supply_df, sales_df):
+    """Tab 5: 판매량 vs 공급량 비교 분석."""
+    st.markdown("### ⚖️ 판매량 vs 공급량 비교")
     st.markdown("""
     <div class="info-box">
-    <b>공급량</b>(Sheet1, 상품별 분배 · 단위 MJ→GJ 환산)과 <b>판매량</b>(Sheet3, 상품별판매량 실적 · 단위 GJ)을
-    상품별·월별로 비교합니다.<br>
-    공급량은 자가소비·손실분 등이 포함된 총 공급 물량, 판매량은 실제 고객에게 청구되는 물량이라
-    구조적으로 차이가 날 수 있습니다. (수송용은 CNG만 매칭, BIO가스는 제외)<br>
-    ※ 공급량이 아직 반영되지 않은 달(예: 최근월 상품별 분배 미확정)은 판매량이 있어도 비교에서 제외됩니다.
+    <b>공급량</b>(Sheet1, MJ→GJ) vs <b>판매량</b>(Sheet3, GJ)을 같은 상품끼리 매칭하여 비교합니다.<br>
+    공급량 = 도관 투입량 · 판매량 = 실제 요금 청구 기준
     </div>
     """, unsafe_allow_html=True)
 
-    supply_df, err1 = load_sheet1_supply()
-    sales_df_raw, err3 = load_sheet3_sales()
-    if err1 or err3:
-        st.error("공급량 또는 판매량 데이터를 불러오지 못했습니다.")
-        st.stop()
+    long_df = build_sales_vs_supply_long(supply_df, sales_df)
+    if long_df.empty:
+        st.warning("공급량과 판매량을 매칭할 수 있는 상품이 없습니다.")
+        return
 
-    sv_long = build_sales_vs_supply_long(supply_df, sales_df_raw)
-    if sv_long.empty:
-        st.warning("공급량-판매량 매칭 데이터가 없습니다.")
-        st.stop()
+    prods_avail = sorted(long_df["상품"].unique(), key=lambda x: PRODUCT_LIST.index(x) if x in PRODUCT_LIST else 999)
 
-    # ── 전체 상품 연간 요약 ──
-    sv_years_all = sorted(sv_long["Year"].unique(), reverse=True)
-    sv_year_sel = st.selectbox("📆 요약 연도 선택", options=sv_years_all, key="sv_year_sel")
+    # ── 상품 선택 ──
+    sv_prod = st.selectbox("상품 선택", options=prods_avail,
+                           index=0, key="sv_prod")
+    prod_df = long_df[long_df["상품"] == sv_prod].copy()
+    prod_df["Year_Month"] = prod_df["Year"].astype(str) + "-" + prod_df["Month"].astype(str).str.zfill(2)
+    prod_df = prod_df.sort_values(["Year", "Month"])
 
-    sv_year_df = sv_long[sv_long["Year"] == sv_year_sel]
-    yearly_overview = sv_year_df.groupby("상품")[["공급량", "판매량"]].sum().reset_index()
-    n_months = sv_year_df.groupby("상품").size().rename("포함월수").reset_index()
-    yearly_overview = yearly_overview.merge(n_months, on="상품", how="left")
-    yearly_overview["차이(판매-공급)"] = yearly_overview["판매량"] - yearly_overview["공급량"]
-    with np.errstate(divide="ignore", invalid="ignore"):
-        yearly_overview["오차율(%)"] = np.where(
-            yearly_overview["공급량"] != 0,
-            yearly_overview["차이(판매-공급)"] / yearly_overview["공급량"] * 100, np.nan)
-    # PRODUCT_LIST 순서대로 정렬 (오차율 큰 순으로 보고 싶으면 아래 sort_values 주석 해제)
-    order_map = {p: i for i, p in enumerate(PRODUCT_LIST)}
-    yearly_overview["_ord"] = yearly_overview["상품"].map(order_map)
-    yearly_overview = yearly_overview.sort_values("_ord").drop(columns="_ord")
+    sv_years_avail = sorted(prod_df["Year"].unique().astype(int))
 
-    # 소계 행 — 공급량/판매량/차이는 단순 합산, 오차율은 합산값 기준으로 재계산
-    subtotal_row = {"상품": "소계"}
-    subtotal_row["공급량"] = yearly_overview["공급량"].sum()
-    subtotal_row["판매량"] = yearly_overview["판매량"].sum()
-    subtotal_row["차이(판매-공급)"] = subtotal_row["판매량"] - subtotal_row["공급량"]
-    subtotal_row["포함월수"] = ""
-    subtotal_row["오차율(%)"] = (
-        subtotal_row["차이(판매-공급)"] / subtotal_row["공급량"] * 100
-        if subtotal_row["공급량"] else np.nan)
-    yearly_overview_disp = pd.concat([yearly_overview, pd.DataFrame([subtotal_row])], ignore_index=True)
-
-    st.markdown(f"**📊 {sv_year_sel}년 — 전체 상품 연간 요약**")
-    render_centered_table_with_subtotal(
-        yearly_overview_disp,
-        int_cols=["공급량", "판매량", "차이(판매-공급)"],
-        pct_cols=["오차율(%)"],
-        label_col="상품", subtotal_label="소계")
-    st.caption("오차율(%) = (판매량 − 공급량) ÷ 공급량 × 100 — 양수면 판매량이 공급량보다 많다는 뜻입니다. "
-               "'포함월수'가 12보다 적으면, 해당 연도 중 공급량 또는 판매량이 아직 반영되지 않은 달이 "
-               "있어 그 달은 집계에서 제외됐다는 뜻입니다. 맨 아래 '소계' 행은 전체 상품 합산 기준입니다.")
-
-    csv_overview = yearly_overview_disp.to_csv(index=False).encode("utf-8-sig")
-    st.download_button(f"📥 {sv_year_sel}년 전체 상품 요약 다운로드", data=csv_overview,
-                       file_name=f"판매량vs공급량_{sv_year_sel}_전체요약.csv", mime="text/csv",
-                       key="dl_sv_overview")
-
-    # ── 상품별 상세 비교 ──
-    st.markdown("---")
-    st.markdown("**🔍 상품별 상세 비교**")
-
-    sv_products = [p for p in PRODUCT_LIST if p in sv_long["상품"].unique()]
-    sv_prod_sel = st.selectbox("상품 선택", options=sv_products, key="sv_prod_sel")
-
-    prod_df = sv_long[sv_long["상품"] == sv_prod_sel].sort_values(["Year", "Month"]).reset_index(drop=True)
-    sv_years_avail = sorted(prod_df["Year"].unique())
+    # ── 연도 멀티셀렉트 (추세 라인 차트용) ──
     sv_year_range = st.multiselect(
         "연도 선택 (비워두면 전체 기간)", options=sv_years_avail,
         default=sv_years_avail, key="sv_year_range")
     prod_df_f = prod_df[prod_df["Year"].isin(sv_year_range)] if sv_year_range else prod_df
-    if prod_df_f.empty:
-        st.warning("선택한 조건에 해당하는 데이터가 없습니다.")
-        st.stop()
 
-    render_line_chart(prod_df_f, "Year_Month", ["공급량", "판매량"], height=420)
-    st.caption("🔷 공급량 · 🔵 판매량 — 범례 클릭 시 라인 표시/숨김")
+    # ── 추세 라인 차트 ──
+    st.markdown(f"**📈 {sv_prod} — 공급량 vs 판매량 추세**")
+    fig_trend = go.Figure()
+    fig_trend.add_trace(go.Scatter(
+        x=prod_df_f["Year_Month"], y=prod_df_f["공급량"],
+        mode="lines+markers", name="공급량",
+        line=dict(color="#1e3a8a", width=2),
+        marker=dict(size=4),
+        hovertemplate="%{x} 공급량 %{y:,.0f} GJ<extra></extra>"))
+    fig_trend.add_trace(go.Scatter(
+        x=prod_df_f["Year_Month"], y=prod_df_f["판매량"],
+        mode="lines+markers", name="판매량",
+        line=dict(color="#38bdf8", width=2),
+        marker=dict(size=4),
+        hovertemplate="%{x} 판매량 %{y:,.0f} GJ<extra></extra>"))
+    fig_trend.update_layout(**CHART_LAYOUT)
+    fig_trend.update_layout(yaxis_title="물량 (GJ)", margin=dict(t=20, b=60), height=400)
+    st.plotly_chart(fig_trend, use_container_width=True, config=dict(displaylogo=False))
 
-    # ── 월별(1~12월) 비교 — 선택 연도들을 같은 달끼리 묶어서 합산 비교 ──
-    st.markdown("**📅 월별 비교 (선택 연도 합산)**")
-    month_agg = prod_df_f.groupby("Month")[["공급량", "판매량"]].sum().reset_index().sort_values("Month")
+    # ── 월별(1~12월) 비교 — 특정 연도 선택 ──
+    st.markdown("---")
+    st.markdown("**📅 월별 비교 (특정 연도)**")
+
+    # 단일 연도 선택
+    sv_single_year = st.selectbox(
+        "비교할 연도 선택", options=sv_years_avail,
+        index=len(sv_years_avail) - 1,  # 기본값: 가장 최근 연도
+        key="sv_single_year")
+
+    single_df = prod_df[prod_df["Year"] == sv_single_year].copy()
+    month_agg = single_df.groupby("Month")[["공급량", "판매량"]].sum().reset_index().sort_values("Month")
     month_labels = [f"{int(m)}월" for m in month_agg["Month"]]
+
     fig_month = go.Figure()
-    fig_month.add_trace(go.Bar(x=month_labels, y=month_agg["공급량"], name="공급량",
-                                marker_color=LINE_COLORS.get("공급량"),
-                                hovertemplate="%{x} 공급량 %{y:,.0f} GJ<extra></extra>"))
-    fig_month.add_trace(go.Bar(x=month_labels, y=month_agg["판매량"], name="판매량",
-                                marker_color=LINE_COLORS.get("판매량"),
-                                hovertemplate="%{x} 판매량 %{y:,.0f} GJ<extra></extra>"))
+    fig_month.add_trace(go.Bar(
+        x=month_labels, y=month_agg["공급량"], name="공급량",
+        marker_color="#1e3a8a",
+        hovertemplate="%{x} 공급량 %{y:,.0f} GJ<extra></extra>"))
+    fig_month.add_trace(go.Bar(
+        x=month_labels, y=month_agg["판매량"], name="판매량",
+        marker_color="#38bdf8",
+        hovertemplate="%{x} 판매량 %{y:,.0f} GJ<extra></extra>"))
     fig_month.update_layout(**CHART_LAYOUT)
     fig_month.update_layout(barmode="group", yaxis_title="물량 (GJ)",
                             margin=dict(t=20, b=60), height=380)
     st.plotly_chart(fig_month, use_container_width=True, config=dict(displaylogo=False))
-    _yr_txt = f"{min(sv_year_range)}~{max(sv_year_range)}년" if sv_year_range else "전체 기간"
-    st.caption(f"선택한 연도({_yr_txt})를 같은 달끼리 합산해서 비교한 그래프입니다 "
-               "— 예: '1월' 막대는 선택 연도들의 1월 값을 모두 더한 것입니다.")
+    st.caption(f"{sv_single_year}년 {sv_prod}의 월별 공급량 vs 판매량 비교 그래프입니다.")
 
-    table_series_sv = ["공급량", "판매량"]
-
-    st.markdown("**📆 연도별 요약 (공급량 대비 판매량 차이)**")
-    yearly_table_sv = render_yearly_diff_table(
-        prod_df_f, "공급량", table_series_sv,
-        key_prefix=f"sv_yearly_{sv_prod_sel}", target_label="공급량")
-
-    monthly_diff_sv = _build_diff_table(prod_df_f, "Year_Month", "공급량", table_series_sv, target_label="공급량")
-    st.markdown("**🗂️ 월별 상세 비교**")
-    render_diff_table(monthly_diff_sv, "Year_Month", target_col="공급량", key_prefix=f"sv_monthly_{sv_prod_sel}")
-
-    dl_sv1, dl_sv2 = st.columns(2)
-    with dl_sv1:
-        csv_sv_yearly = yearly_table_sv.to_csv(index=False).encode("utf-8-sig")
-        st.download_button(f"📥 {sv_prod_sel} 연도별 요약 다운로드", data=csv_sv_yearly,
-                           file_name=f"판매량vs공급량_{sv_prod_sel}_연도별.csv", mime="text/csv",
-                           key=f"dl_sv_yearly_{sv_prod_sel}")
-    with dl_sv2:
-        csv_sv_monthly = monthly_diff_sv.to_csv(index=False).encode("utf-8-sig")
-        st.download_button(f"📥 {sv_prod_sel} 월별 상세 다운로드", data=csv_sv_monthly,
-                           file_name=f"판매량vs공급량_{sv_prod_sel}_월별.csv", mime="text/csv",
-                           key=f"dl_sv_monthly_{sv_prod_sel}")
+    # ── 월별 상세 데이터 테이블 ──
+    with st.expander(f"🗂️ {sv_single_year}년 월별 상세 데이터"):
+        tbl = month_agg.copy()
+        tbl["차이(공급-판매)"] = tbl["공급량"] - tbl["판매량"]
+        tbl["차이율(%)"] = ((tbl["공급량"] - tbl["판매량"]) / tbl["판매량"].replace(0, np.nan) * 100).round(1)
+        tbl.insert(0, "월", [f"{int(m)}월" for m in tbl["Month"]])
+        display_cols = ["월", "공급량", "판매량", "차이(공급-판매)", "차이율(%)"]
+        st.dataframe(tbl[display_cols].reset_index(drop=True),
+                     use_container_width=True, hide_index=True)
 
 
 # ══════════════════════════════════════════════
@@ -1887,7 +1770,7 @@ def main():
     # ── TAB 2: 공급량 예측 검증 ──
     # ══════════════════════════════════════════
     elif selected_menu == menu_options[1]:
-        st.markdown("### 🔍 [Part 1] 공급량 예측 검증")
+        st.markdown("### 🔍 공급량 예측 검증")
         st.markdown("""
         <div class="info-box">
         선택한 <b>학습 연도</b>로 모델을 만들고, <b>검증 연도</b>의 <u>실제 기온</u>을 넣어
@@ -1936,8 +1819,6 @@ def main():
         naive_by_product = {}
         for prod in vf_products:
             naive_by_product[prod] = train_data_vf.groupby("월")[prod].mean()
-
-        best_col_by_product = {}  # {상품: 검증 단계에서 MAE 최저였던 컬럼명} — Part2 하이라이트에 재사용
 
         # 모델 설명
         st.markdown("---")
@@ -1995,32 +1876,26 @@ def main():
 
             # R²/MAE 카드 — MAE가 가장 낮은 카드에 ✅ 표시
             metrics_vf = [
-                {"label": "Poly-3 단일", "col": "Poly-3 단일", "r2": r2_v1, "mae": mae_v1, "delta": None},
+                {"label": "Poly-3 단일", "r2": r2_v1, "mae": mae_v1, "delta": None},
             ]
             if has_v2:
-                metrics_vf.append({"label": "분리·3차식(참고)", "col": "분리·3차식", "r2": r2_v2, "mae": mae_v2,
+                metrics_vf.append({"label": "분리·3차식(참고)", "r2": r2_v2, "mae": mae_v2,
                                    "delta": r2_v2 - r2_v1 if not np.isnan(r2_v2) else None})
             if has_v3:
-                metrics_vf.append({"label": "분리·2차식", "col": "분리·2차식", "r2": r2_v3, "mae": mae_v3,
+                metrics_vf.append({"label": "분리·2차식", "r2": r2_v3, "mae": mae_v3,
                                    "delta": r2_v3 - r2_v1 if not np.isnan(r2_v3) else None})
-            metrics_vf.append({"label": f"{naive_label}", "col": naive_label, "r2": r2_naive, "mae": mae_naive, "delta": None})
+            metrics_vf.append({"label": f"{naive_label}", "r2": r2_naive, "mae": mae_naive, "delta": None})
 
             valid_maes = [m["mae"] for m in metrics_vf if not np.isnan(m["mae"])]
             best_mae = min(valid_maes) if valid_maes else None
-            best_col_vf = next((m["col"] for m in metrics_vf
-                               if best_mae is not None and m["mae"] == best_mae), None)
-            best_col_by_product[prod] = best_col_vf
             mcols_vf = st.columns(len(metrics_vf))
             for i, m in enumerate(metrics_vf):
-                is_best_vf = best_mae is not None and m["mae"] == best_mae
-                lbl = f'✅ {m["label"]}' if is_best_vf else m["label"]
+                lbl = f'✅ {m["label"]}' if (best_mae is not None and m["mae"] == best_mae) else m["label"]
                 if not np.isnan(m["r2"]) and not np.isnan(m["mae"]):
-                    render_r2_mae_card(mcols_vf[i], lbl, m["r2"], m["mae"], delta_r2=m["delta"], is_best=is_best_vf)
+                    render_r2_mae_card(mcols_vf[i], lbl, m["r2"], m["mae"], delta_r2=m["delta"])
                 else:
                     mcols_vf[i].markdown(f'<div style="font-size:0.8rem;color:#666;">{m["label"]}</div>'
                                          '<div style="color:#999;">데이터 부족</div>', unsafe_allow_html=True)
-            if best_col_vf:
-                st.caption(f"🟢 초록색으로 표시된 열이 MAE 최저(가장 정확한) 모델입니다: **{best_col_vf}**")
 
             st.caption(f"Poly-3 학습 R² = {r2_train:.4f} | {poly_eq_text(model_vf)}")
 
@@ -2080,14 +1955,14 @@ def main():
             st.markdown("**📆 연도별 실적 대비 차이 요약**")
             yearly_table_vf = render_yearly_diff_table(eval_comp, "실적", table_series_vf,
                                      key_prefix=f"vf_yearly_{prod}",
-                                     target_label="실적", extra_highlight_col=best_col_vf)
+                                     target_label="실적")
 
             # 월별 차이표
             diff_df = _build_diff_table(eval_comp, "Year_Month", "실적",
                                         table_series_vf, target_label="실적")
             st.markdown("**🗂️ 월별 상세 비교**")
             render_diff_table(diff_df, "Year_Month", target_col="실적",
-                              key_prefix=f"vf_monthly_{prod}", extra_highlight_col=best_col_vf)
+                              key_prefix=f"vf_monthly_{prod}")
 
             # 산점도
             with st.expander(f"🔎 {prod} — 기온↔공급량 산점도 (학습 데이터)"):
@@ -2096,13 +1971,8 @@ def main():
                 st.plotly_chart(fig_sc, use_container_width=True,
                                 config=dict(scrollZoom=True, displaylogo=False))
 
-            # CSV 다운로드 — 재검증 시 동일 조건 복원을 위한 메타정보 헤더 포함
-            meta_vf = [
-                f"상품: {prod}",
-                f"데이터 학습연도: {min(vf_train_years)}~{max(vf_train_years)}년",
-                f"검증 연도: {min(vf_eval_years)}~{max(vf_eval_years)}년",
-            ]
-            csv_vf = csv_with_meta(diff_df, meta_vf)
+            # CSV 다운로드
+            csv_vf = diff_df.to_csv(index=False).encode("utf-8-sig")
             st.download_button(f"📥 {prod} 검증 결과 다운로드", data=csv_vf,
                                file_name=f"공급량검증_{prod}.csv", mime="text/csv",
                                key=f"dl_vf_{prod}")
@@ -2111,12 +1981,7 @@ def main():
         # ══════════════════════════════════════
         # ── 검증 탭 내 미래 예측 섹션 ──
         # ══════════════════════════════════════
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown(
-            '<hr style="margin-top:0.5rem; margin-bottom:1.5rem; border:none; '
-            'border-top:4px solid #1a3c5e;">',
-            unsafe_allow_html=True)
-        st.markdown("### 📈 [Part 2] 미래 공급량 예측")
+        st.markdown("### 📈 미래 공급량 예측")
         st.markdown("""
         <div class="info-box">
         위 검증에서 사용한 <b>학습 연도·상품</b> 설정을 그대로 이어받아 미래 예측을 수행합니다.<br>
@@ -2407,20 +2272,12 @@ def main():
                     pred_target_col = None
                     table_series_pred = [c for c in selected_pred if c in pred_comp.columns]
 
-                # Part1에서 계산한 이 상품의 최고 모델을 Part2 표에도 동일하게 하이라이트
-                # (단순N년평균처럼 라벨의 연도 개수가 검증/예측 구간에서 다를 수 있어 보정)
-                best_col_for_future = best_col_by_product.get(prod)
-                if best_col_for_future and best_col_for_future.startswith("단순") \
-                        and best_col_for_future != naive_label_pred:
-                    best_col_for_future = naive_label_pred
-
                 # 연도별 시나리오 합산
                 st.markdown("**📆 연도별 시나리오 합산**")
                 render_yearly_diff_table(pred_comp, pred_target_col, table_series_pred,
                                          key_prefix=f"pred_yearly_{prod}",
                                          target_label="실적" if has_actual_pred else None,
-                                         show_mae=has_actual_pred,
-                                         extra_highlight_col=best_col_for_future)
+                                         show_mae=has_actual_pred)
 
                 # 월별 시나리오
                 diff_pred = _build_diff_table(pred_comp, "Year_Month", pred_target_col,
@@ -2435,17 +2292,10 @@ def main():
                 render_diff_table(disp_pred, "Year_Month",
                                   target_col=pred_target_col if (pred_target_col and pred_target_col in disp_pred.columns) else None,
                                   key_prefix=f"pred_monthly_{prod}",
-                                  show_mae=has_actual_pred,
-                                  extra_highlight_col=best_col_for_future)
+                                  show_mae=has_actual_pred)
 
-                # CSV 다운로드 — 재검증 시 동일 조건 복원을 위한 메타정보 헤더 포함
-                meta_pred = [
-                    f"상품: {prod}",
-                    f"데이터 학습연도: {min(vf_train_years)}~{max(vf_train_years)}년",
-                    f"과거 기온 평균 연도: {min(temp_avg_years_vf)}~{max(temp_avg_years_vf)}년",
-                    f"예측 기간: {pred_start_y_vf}-{pred_start_m_vf:02d} ~ {pred_end_y_vf}-{pred_end_m_vf:02d}",
-                ]
-                csv_pred = csv_with_meta(disp_pred, meta_pred)
+                # CSV 다운로드
+                csv_pred = disp_pred.to_csv(index=False).encode("utf-8-sig")
                 st.download_button(f"📥 {prod} 예측 결과 다운로드", data=csv_pred,
                                    file_name=f"공급량예측_{prod}.csv", mime="text/csv",
                                    key=f"dl_pred_{prod}")
@@ -2678,16 +2528,6 @@ def main():
                                     config=dict(scrollZoom=True, displaylogo=False))
             buf = BytesIO()
             with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-                meta_df3 = pd.DataFrame({
-                    "항목": ["예측 상품", "데이터 학습연도", "과거 기온 평균 연도", "예측 기간"],
-                    "값": [
-                        ", ".join(pred_products),
-                        f"{min(train_years)}~{max(train_years)}년",
-                        f"{min(temp_avg_years)}~{max(temp_avg_years)}년",
-                        f"{pred_start_y}-{pred_start_m:02d} ~ {pred_end_y}-{pred_end_m:02d}",
-                    ],
-                })
-                meta_df3.to_excel(writer, sheet_name="메타정보", index=False)
                 for sname in scenarios:
                     all_prods = fut_df[["연", "월"]].copy()
                     for prod in pred_products:
@@ -2703,11 +2543,12 @@ def main():
     elif selected_menu == menu_options[3]:
         render_cooling_analysis()
 
-    # ══════════════════════════════════════════
     # ── TAB 5: 판매량 vs 공급량 ──
-    # ══════════════════════════════════════════
     elif selected_menu == menu_options[4]:
-        render_sales_vs_supply()
+        if sales_df is not None and not sales_df.empty:
+            render_sales_vs_supply(supply_df, sales_df)
+        else:
+            st.error("판매량 데이터(Sheet3)를 불러오지 못해 이 탭을 사용할 수 없습니다.")
 
 
 def _parse_uploaded_temp(uploaded_file):
