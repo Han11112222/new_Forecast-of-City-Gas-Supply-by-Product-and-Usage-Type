@@ -991,7 +991,7 @@ def render_yearly_diff_table(monthly_raw_df, target_col, selected_cols, key_pref
 
     yearly_raw = tmp.groupby('Year')[cols].sum().reset_index()
 
-    # MAE 모드용: 월별 signed 차이/오차율을 미리 계산 (실적 − 대상값 방향)
+    # MAE 모드용: 월별 signed 차이/오차율을 미리 계산 (실적 − 대상값 방향, 오차율은 대상값 기준 %)
     monthly_diff, monthly_pct = {}, {}
     if has_target:
         for c in cols:
@@ -999,7 +999,7 @@ def render_yearly_diff_table(monthly_raw_df, target_col, selected_cols, key_pref
                 continue
             monthly_diff[c] = tmp[target_col] - tmp[c]
             with np.errstate(divide='ignore', invalid='ignore'):
-                monthly_pct[c] = np.where(tmp[target_col] != 0, monthly_diff[c] / tmp[target_col] * 100, np.nan)
+                monthly_pct[c] = np.where(tmp[c] != 0, monthly_diff[c] / tmp[c] * 100, np.nan)
 
     out = pd.DataFrame({'Year': yearly_raw['Year']})
     pending, target_seen = [], False
@@ -1015,7 +1015,7 @@ def render_yearly_diff_table(monthly_raw_df, target_col, selected_cols, key_pref
             out[f'{c}\n{label}대비차이'] = diff_val
             with np.errstate(divide='ignore', invalid='ignore'):
                 out[f'{c}\n{label}대비오차율(%)'] = np.where(
-                    yearly_raw[target_col] != 0, diff_val / yearly_raw[target_col] * 100, np.nan)
+                    yearly_raw[c] != 0, diff_val / yearly_raw[c] * 100, np.nan)
 
     for c in cols:
         out[c] = yearly_raw[c]
@@ -1058,7 +1058,7 @@ def _build_diff_table(df, x_col, target_col, selected_cols, target_label=None):
         out[f'{colname}\n{label}대비차이'] = df[target_col] - df[colname]
         with np.errstate(divide='ignore', invalid='ignore'):
             out[f'{colname}\n{label}대비오차율(%)'] = np.where(
-                df[target_col] != 0, out[f'{colname}\n{label}대비차이'] / df[target_col] * 100, np.nan)
+                df[colname] != 0, out[f'{colname}\n{label}대비차이'] / df[colname] * 100, np.nan)
 
     for c in cols:
         out[c] = df[c]
