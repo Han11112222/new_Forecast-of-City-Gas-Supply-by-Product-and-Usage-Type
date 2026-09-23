@@ -1572,11 +1572,33 @@ def render_sales_vs_supply(supply_df, sales_df):
     with st.expander(f"🗂️ {sv_single_year}년 월별 상세 데이터"):
         tbl = month_agg.copy()
         tbl["차이(공급-판매)"] = tbl["공급량"] - tbl["판매량"]
-        tbl["차이율(%)"] = ((tbl["공급량"] - tbl["판매량"]) / tbl["판매량"].replace(0, np.nan) * 100).round(1)
+        tbl["차이율(%)"] = ((tbl["공급량"] - tbl["판매량"]) / tbl["판매량"].replace(0, np.nan) * 100)
         tbl.insert(0, "월", [f"{int(m)}월" for m in tbl["Month"]])
         display_cols = ["월", "공급량", "판매량", "차이(공급-판매)", "차이율(%)"]
-        st.dataframe(tbl[display_cols].reset_index(drop=True),
-                     use_container_width=True, hide_index=True)
+        # 포맷 적용: 천단위 콤마, 소수점 제거 (% 컬럼만 소수점 1자리)
+        def _fmt_sv(col, val):
+            if val is None or (isinstance(val, float) and pd.isna(val)):
+                return "-"
+            if col == "차이율(%)":
+                return f"{val:.1f}%"
+            if col == "월":
+                return str(val)
+            try:
+                return f"{val:,.0f}"
+            except (TypeError, ValueError):
+                return str(val)
+        hdr = "".join(f"<th>{c}</th>" for c in display_cols)
+        body = ""
+        for _, row in tbl.iterrows():
+            cells = "".join(f"<td>{_fmt_sv(c, row[c])}</td>" for c in display_cols)
+            body += f"<tr>{cells}</tr>"
+        st.markdown(f"""{_DIFF_TABLE_CSS}
+<div class="difftbl-wrap">
+<table class="difftbl">
+<thead><tr>{hdr}</tr></thead>
+<tbody>{body}</tbody>
+</table>
+</div>""", unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════
