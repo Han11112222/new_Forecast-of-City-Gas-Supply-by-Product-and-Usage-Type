@@ -2410,6 +2410,28 @@ def main():
                 sc_table_full = pd.concat([sc_table, pd.DataFrame([sum_row_sc])], ignore_index=True)
                 render_centered_table(sc_table_full, int_cols=list(scenarios_vf.keys()))
 
+                # ── 시나리오 예측 결과 다운로드 (연도별 합산 + 월별 상세) ──
+                model_name_sc = sc_model_sel.split(" ", 1)[-1]
+                sc_monthly_csv = sc_table_full.copy()
+                sc_monthly_csv.insert(2, "예상기온(℃)",
+                                      list(np.round(fut_df_vf["예상기온"].values.astype(float), 1)) + [""])
+                sc_yearly_csv = sc_year.copy()
+                for c in ("Best/Normal(%)", "Conservative/Normal(%)"):
+                    sc_yearly_csv[c] = sc_yearly_csv[c].round(1)
+                delta_note = pd.DataFrame([{"예측 모델": model_name_sc,
+                                            "Normal Δ℃": d_norm_vf, "Best Δ℃": d_best_vf,
+                                            "Conservative Δ℃": d_cons_vf}])
+                csv_text = (
+                    f"[{prod}] 모델 선택 시나리오 (Best / Conservative)\n"
+                    + delta_note.to_csv(index=False)
+                    + "\n[연도별 시나리오 합산]\n" + sc_yearly_csv.to_csv(index=False)
+                    + "\n[월별 상세]\n" + sc_monthly_csv.to_csv(index=False)
+                )
+                csv_sc = csv_text.encode("utf-8-sig")
+                st.download_button(f"📥 {prod} 시나리오 예측 결과 다운로드", data=csv_sc,
+                                   file_name=f"공급량시나리오_{prod}_{model_name_sc}.csv", mime="text/csv",
+                                   key=f"dl_sc_{prod}")
+
                 st.markdown("---")
 
     # ══════════════════════════════════════════
