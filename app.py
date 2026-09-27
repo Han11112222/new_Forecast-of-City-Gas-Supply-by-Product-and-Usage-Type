@@ -2381,6 +2381,29 @@ def main():
                 sc_table = fut_df_vf[["연", "월"]].copy()
                 for sname in scenarios_vf:
                     sc_table[sname] = scenario_results[sname]
+
+                # ── 연도별 시나리오 합산 (월별 표보다 먼저 표시) ──
+                st.markdown("**📆 연도별 시나리오 합산**")
+                sc_year = sc_table.groupby("연").agg(
+                    월수=("월", "count"),
+                    **{s: (s, "sum") for s in scenarios_vf}).reset_index()
+                sc_year["연"] = sc_year["연"].astype(int)
+                for sname in ("Best", "Conservative"):
+                    sc_year[f"{sname}-Normal"] = sc_year[sname] - sc_year["Normal"]
+                    sc_year[f"{sname}/Normal(%)"] = np.where(
+                        sc_year["Normal"] != 0, sc_year[sname] / sc_year["Normal"].replace(0, np.nan) * 100, np.nan)
+                sc_year = sc_year[["연", "월수", "Normal",
+                                   "Best", "Best-Normal", "Best/Normal(%)",
+                                   "Conservative", "Conservative-Normal", "Conservative/Normal(%)"]]
+                sc_year_disp = sc_year.copy()
+                for c in ("Best/Normal(%)", "Conservative/Normal(%)"):
+                    sc_year_disp[c] = sc_year_disp[c].map(lambda x: "" if pd.isna(x) else f"{x:.1f}%")
+                render_centered_table(sc_year_disp, int_cols=["Normal", "Best", "Best-Normal",
+                                                              "Conservative", "Conservative-Normal"])
+                if (sc_year["월수"] < 12).any():
+                    st.caption("※ 월수가 12개월 미만인 연도는 예측 기간에 포함된 월만 합산한 값입니다.")
+
+                st.markdown("**🗂️ 월별 상세**")
                 sum_row_sc = {"연": "합계", "월": ""}
                 for sname in scenarios_vf:
                     sum_row_sc[sname] = int(sc_table[sname].sum())
