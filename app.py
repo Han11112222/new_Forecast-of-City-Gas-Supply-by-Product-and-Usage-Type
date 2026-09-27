@@ -565,7 +565,7 @@ LINE_COLORS = {
 SERIES_LABELS = {
     '판매량_실적':  '실적',
     '예측_판매량_v1':    '기존 단일 3차식',
-    '예측_판매량_v2': '분리·3차식(참고)',
+    '예측_판매량_v2': '분리·3차식',
     '예측_판매량_v3': '분리·2차식',
     '판매량_계획':    '판매량 계획',
 }
@@ -833,6 +833,20 @@ def poly_eq_str(coefs, intercept):
     if eq.startswith("+"):
         eq = eq[1:]
     return f"y = {eq}"
+
+
+def split_eq_caption(label, models, w_data, s_data, x_col="기온_split", y_col="공급량_split"):
+    """분리 모델(동절기/하절기)의 표본수·학습 R²·수식을 한 줄 캡션으로 만든다."""
+    parts = []
+    for name, key, data in (("동절기", "winter", w_data), ("하절기", "summer", s_data)):
+        m = models.get(key)
+        if m is None or data is None or len(data) == 0:
+            parts.append(f"{name}: 데이터 부족")
+            continue
+        lr = m.named_steps["linearregression"]
+        r2 = r2_score(data[y_col], m.predict(data[[x_col]]))
+        parts.append(f"{name}(n={len(data)}, R²={r2:.4f}): {poly_eq_str(lr.coef_, lr.intercept_)}")
+    return f"{label} — " + " | ".join(parts)
 
 
 def _dynamic_fmt(df, x_col):
@@ -1153,7 +1167,7 @@ def render_cooling_analysis():
 (여름, 겨울철 패턴 학습시 과대예측 발생 가능)
 ${poly_eq_str(cb, ib)}$
 
-**2. 동절기/하절기 분리 (HDD {WINTER_T:.0f}℃ / CDD {SUMMER_T:.0f}℃ 기준온도 참고)**
+**2. 동절기/하절기 분리 (HDD {WINTER_T:.0f}℃ / CDD {SUMMER_T:.0f}℃ 기준온도 적용)**
 {item2_eq}
 
 **3. 추가 모델 (2차식)**
@@ -1249,7 +1263,7 @@ ${poly_eq_str(cs, isu)}$
     metrics.append({"key": "base", "label": "기존 단일 3차식", "r2": r2_base_eval,
                     "mae": mae_base_eval, "delta": None})
     if has_cubic_split:
-        metrics.append({"key": "cubic", "label": "분리·3차식 (참고)", "r2": r2_cubic_eval,
+        metrics.append({"key": "cubic", "label": "분리·3차식", "r2": r2_cubic_eval,
                         "mae": mae_cubic_eval, "delta": r2_cubic_eval - r2_base_eval})
     metrics.append({"key": "final", "label": "분리·2차식", "r2": r2_final_eval,
                     "mae": mae_final_eval, "delta": r2_final_eval - r2_base_eval})
@@ -1797,7 +1811,7 @@ def main():
         <div class="info-box">
         선택한 <b>학습 연도</b>로 모델을 만들고, <b>검증 연도</b>의 <u>실제 기온</u>을 넣어
         예측값을 산출한 뒤 실적과 비교합니다.<br>
-        4가지 방식을 나란히 비교: <b>① Poly-3 단일</b> · <b>② 분리·3차식</b>(참고) · <b>③ 분리·2차식</b> · <b>④ 단순N년평균</b><br>
+        4가지 방식을 나란히 비교: <b>① Poly-3 단일</b> · <b>② 분리·3차식</b> · <b>③ 분리·2차식</b> · <b>④ 단순N년평균</b><br>
         검증 R²/MAE가 양호하면 → 아래 <b>📈 미래 예측</b> 섹션에서 바로 예측을 수행하세요.
         </div>
         """, unsafe_allow_html=True)
@@ -1847,7 +1861,7 @@ def main():
         st.markdown(f"""
 **모델 비교 설명**
 - **Poly-3 단일**: 전체 기온 범위를 하나의 3차 다항식으로 학습 (기존 방식)
-- **분리·3차식**: 동절기(≤{WINTER_T:.0f}℃)와 하절기(≥{SUMMER_T:.0f}℃)를 각각 3차식으로 분리 학습 (참고용)
+- **분리·3차식**: 동절기(≤{WINTER_T:.0f}℃)와 하절기(≥{SUMMER_T:.0f}℃)를 각각 3차식으로 분리 학습
 - **분리·2차식**: 동절기/하절기를 각각 2차식으로 분리 학습 (하절기 표본 부족 시 3차식보다 안정적)
 - **{naive_label}**: 학습 연도의 월별 평균값을 그대로 사용 (기온 무관 베이스라인)
 """)
@@ -1901,7 +1915,7 @@ def main():
                 {"label": "Poly-3 단일", "r2": r2_v1, "mae": mae_v1, "delta": None},
             ]
             if has_v2:
-                metrics_vf.append({"label": "분리·3차식(참고)", "r2": r2_v2, "mae": mae_v2,
+                metrics_vf.append({"label": "분리·3차식", "r2": r2_v2, "mae": mae_v2,
                                    "delta": r2_v2 - r2_v1 if not np.isnan(r2_v2) else None})
             if has_v3:
                 metrics_vf.append({"label": "분리·2차식", "r2": r2_v3, "mae": mae_v3,
@@ -1919,22 +1933,16 @@ def main():
                     mcols_vf[i].markdown(f'<div style="font-size:0.8rem;color:#666;">{m["label"]}</div>'
                                          '<div style="color:#999;">데이터 부족</div>', unsafe_allow_html=True)
 
-            st.caption(f"Poly-3 학습 R² = {r2_train:.4f} | {poly_eq_text(model_vf)}")
+            st.caption(f"Poly-3 단일 — 학습 R² = {r2_train:.4f} | {poly_eq_text(model_vf)}")
 
-            # 분리 모델 수식 표시
+            # 분리 모델 수식 표시 (3차식·2차식 모두 동절기/하절기 식을 각각 표시)
+            if has_v2:
+                st.caption(split_eq_caption("분리·3차식", models_v2, w_data_v2, s_data_v2))
             if has_v3:
-                cw_vf = models_v3["winter"].named_steps["linearregression"].coef_
-                iw_vf = models_v3["winter"].named_steps["linearregression"].intercept_
-                cs_vf = models_v3["summer"].named_steps["linearregression"].coef_
-                is_vf = models_v3["summer"].named_steps["linearregression"].intercept_
-                r2_w_vf = r2_score(w_data_v3["공급량_split"],
-                                   models_v3["winter"].predict(w_data_v3[["기온_split"]]))
-                r2_s_vf = r2_score(s_data_v3["공급량_split"],
-                                   models_v3["summer"].predict(s_data_v3[["기온_split"]]))
-                st.caption(f"분리·2차식 — 동절기(n={len(w_data_v3)}, R²={r2_w_vf:.4f}): "
-                           f"{poly_eq_str(cw_vf, iw_vf)} | "
-                           f"하절기(n={len(s_data_v3)}, R²={r2_s_vf:.4f}): "
-                           f"{poly_eq_str(cs_vf, is_vf)}")
+                st.caption(split_eq_caption("분리·2차식", models_v3, w_data_v3, s_data_v3))
+            st.caption(f"※ 분리식: 월평균기온 ≤{WINTER_T:.0f}℃(HDD 기준온도)는 동절기 식, "
+                       f"≥{SUMMER_T:.0f}℃(CDD 기준온도)는 하절기 식을 적용하고, "
+                       f"그 사이 구간은 두 식의 경계값을 선형보간하여 연결합니다.")
 
             # 비교 DataFrame 구성
             eval_comp = eval_data_vf[["연", "월"]].copy()
@@ -2212,14 +2220,14 @@ def main():
                 # ── 모델 2: 분리·3차식 ──
                 train_for_split_p = train_data_pred[["월평균기온", prod]].rename(
                     columns={"월평균기온": "기온_split", prod: "공급량_split"})
-                models_p2, _, _ = fit_piecewise_seasonal_models(
+                models_p2, w_data_p2, s_data_p2 = fit_piecewise_seasonal_models(
                     train_for_split_p, x_col="기온_split", y_col="공급량_split", degree=3)
                 has_p2 = models_p2["winter"] is not None and models_p2["summer"] is not None
                 y_p2 = np.clip(np.rint(predict_piecewise_seasonal(models_p2, x_fut_normal)).astype(np.int64), 0, None) \
                     if has_p2 else np.full(len(x_fut_normal), np.nan)
 
                 # ── 모델 3: 분리·2차식 ──
-                models_p3, _, _ = fit_piecewise_seasonal_models(
+                models_p3, w_data_p3, s_data_p3 = fit_piecewise_seasonal_models(
                     train_for_split_p, x_col="기온_split", y_col="공급량_split", degree=2)
                 has_p3 = models_p3["winter"] is not None and models_p3["summer"] is not None
                 y_p3 = np.clip(np.rint(predict_piecewise_seasonal(models_p3, x_fut_normal)).astype(np.int64), 0, None) \
@@ -2269,7 +2277,11 @@ def main():
                     agg_cols_pred.append("분리·2차식")
                 agg_cols_pred.append(naive_label_pred)
 
-                st.caption(f"Poly-3 Train R² = {r2_tr_p:.4f} | {poly_eq_text(model_p)}")
+                st.caption(f"Poly-3 단일 — 학습 R² = {r2_tr_p:.4f} | {poly_eq_text(model_p)}")
+                if has_p2:
+                    st.caption(split_eq_caption("분리·3차식", models_p2, w_data_p2, s_data_p2))
+                if has_p3:
+                    st.caption(split_eq_caption("분리·2차식", models_p3, w_data_p3, s_data_p3))
 
                 # 라인차트 (냉방용과 동일)
                 show_temp_pred = st.checkbox("🌡️ 예상기온 표시", key=f"pred_temp_{prod}")
@@ -2329,7 +2341,7 @@ def main():
 
                 model_options_sc = ["① Poly-3 단일"]
                 if has_p2:
-                    model_options_sc.append("② 분리·3차식(참고)")
+                    model_options_sc.append("② 분리·3차식")
                 if has_p3:
                     model_options_sc.append("③ 분리·2차식")
                 model_options_sc.append(f"④ {naive_label_pred}")
@@ -2467,7 +2479,7 @@ def main():
                 fut_df.loc[miss, "예상기온"] = fut_df.loc[miss, "월"].map(overall_avg)
             if fut_df["예상기온"].isna().any():
                 # merged 전체에도 없는 월(이론상 거의 없음)은 마지막으로 전체 평균 1개 값으로 채운다.
-                st.warning("일부 월은 참고할 기온 데이터가 전혀 없어, 전체 평균기온 1개 값으로 대체했습니다.")
+                st.warning("일부 월은 사용할 기온 데이터가 전혀 없어, 전체 평균기온 1개 값으로 대체했습니다.")
                 fallback_single = merged["월평균기온"].mean()
                 fut_df["예상기온"] = fut_df["예상기온"].fillna(fallback_single)
             st.caption(f"🌡️ 예상기온 산출 기준: {', '.join(str(y) for y in sorted(temp_avg_years))}년 월별 평균")
@@ -2530,7 +2542,7 @@ def main():
                                 config=dict(scrollZoom=True, displaylogo=False))
                 st.caption(f"🟣 점선(다이아몬드)이 '{naive_label}' — 기온 회귀식 없이 최근 "
                           f"{len(temp_avg_years)}개년({', '.join(str(y) for y in sorted(temp_avg_years))}) "
-                          "실적을 월별로 그대로 평균낸 참고선입니다.")
+                          "실적을 월별로 그대로 평균낸 기준선입니다.")
                 st.markdown(f'<div class="sub">📋 {prod} — 시나리오별 월별 예측</div>',
                             unsafe_allow_html=True)
                 compare_tbl = fut_df[["연", "월"]].copy()
