@@ -849,6 +849,25 @@ def split_eq_caption(label, models, w_data, s_data, x_col="기온_split", y_col=
     return f"{label} — " + " | ".join(parts)
 
 
+def fmt_year_list(years):
+    """연도 목록을 '2021~2026년'(연속) 또는 '2021·2023·2025년'(비연속) 형태로 만든다.
+    (CSV에서 칸이 나뉘지 않도록 쉼표 대신 '·' 사용)"""
+    ys = sorted(int(y) for y in years)
+    if not ys:
+        return "-"
+    if len(ys) > 1 and ys == list(range(ys[0], ys[-1] + 1)):
+        return f"{ys[0]}~{ys[-1]}년"
+    return "·".join(str(y) for y in ys) + "년"
+
+
+def download_header(prod, train_years, temp_years):
+    """다운로드 파일 맨 위(A1~A3)에 넣을 조건 3줄 + 빈 줄. 같은 조건으로 다시 받으면 같은 값이 나온다."""
+    return (f"상품 : {prod}\n"
+            f"데이터 학습연도 : {fmt_year_list(train_years)}\n"
+            f"기온 : {fmt_year_list(temp_years)}\n"
+            "\n")
+
+
 def _dynamic_fmt(df, x_col):
     """df의 x_col을 제외한 모든 컬럼에 대해 포맷을 자동 결정한다.
     '오차율' 또는 'MAPE'가 들어간 컬럼은 %, '기온'이 들어간 컬럼은 소수 1자리+℃, 나머지는 천단위 콤마."""
@@ -2329,7 +2348,8 @@ def main():
                                   show_mae=has_actual_pred)
 
                 # CSV 다운로드
-                csv_pred = disp_pred.to_csv(index=False).encode("utf-8-sig")
+                csv_pred = (download_header(prod, vf_train_years, temp_avg_years_vf)
+                            + disp_pred.to_csv(index=False)).encode("utf-8-sig")
                 st.download_button(f"📥 {prod} 예측 결과 다운로드", data=csv_pred,
                                    file_name=f"공급량예측_{prod}.csv", mime="text/csv",
                                    key=f"dl_pred_{prod}")
@@ -2422,7 +2442,8 @@ def main():
                                             "Normal Δ℃": d_norm_vf, "Best Δ℃": d_best_vf,
                                             "Conservative Δ℃": d_cons_vf}])
                 csv_text = (
-                    f"[{prod}] 모델 선택 시나리오 (Best / Conservative)\n"
+                    download_header(prod, vf_train_years, temp_avg_years_vf)
+                    + "[모델 선택 시나리오 (Best / Conservative)]\n"
                     + delta_note.to_csv(index=False)
                     + "\n[연도별 시나리오 합산]\n" + sc_yearly_csv.to_csv(index=False)
                     + "\n[월별 상세]\n" + sc_monthly_csv.to_csv(index=False)
