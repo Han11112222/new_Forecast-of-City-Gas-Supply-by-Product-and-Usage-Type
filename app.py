@@ -6,6 +6,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import re
 import requests
 from io import StringIO, BytesIO
 import plotly.graph_objects as go
@@ -866,12 +867,192 @@ def fmt_year_list(years):
     return "·".join(str(y) for y in ys) + "년"
 
 
-def download_header(prod, train_years, temp_years):
-    """다운로드 파일 맨 위(A1~A3)에 넣을 조건 3줄 + 빈 줄. 같은 조건으로 다시 받으면 같은 값이 나온다."""
-    return (f"상품 : {prod}\n"
+def download_header(prod, train_years, temp_years, temp_version=None):
+    """다운로드 파일 맨 위(A1~A3)에 넣을 조건 3줄 + 빈 줄. 같은 조건으로 다시 받으면 같은 값이 나온다.
+    temp_version을 주면 A4에 '기온 버전' 줄을 추가한다 (업로드 기온 파일 사용 시)."""
+    head = (f"상품 : {prod}\n"
             f"데이터 학습연도 : {fmt_year_list(train_years)}\n"
-            f"기온 : {fmt_year_list(temp_years)}\n"
-            "\n")
+            f"기온 : {fmt_year_list(temp_years)}\n")
+    if temp_version:
+        head += f"기온 버전 : {temp_version}\n"
+    return head + "\n"
+
+
+def get_alt_temp_cols(forecast_temp_df):
+    """업로드 기온 파일의 추가 기온 버전 열 목록 (예: 'Max,min제외', '이상기온제외')."""
+    if forecast_temp_df is None:
+        return []
+    return [c for c in forecast_temp_df.columns
+            if c not in ("연", "월", "예상기온") and forecast_temp_df[c].notna().any()]
+
+
+def predict_temp_models(x_train, y_train, train_split_df, x_fut):
+    """기온 입력(x_fut)으로 기온 모델 3종(Poly-3 단일 / 분리·3차식 / 분리·2차식) 예측값을 돌려준다."""
+    out = {}
+    y1, _, _, _ = fit_poly3(x_train, y_train, x_fut)
+    out["Poly-3 단일"] = np.clip(np.rint(y1), 0, None)
+    for deg, label in ((3, "분리·3차식"), (2, "분리·2차식")):
+        m, _, _ = fit_piecewise_seasonal_models(train_split_df, x_col="기온_split",
+                                                y_col="공급량_split", degree=deg)
+        if m["winter"] is not None and m["summer"] is not None:
+            out[label] = np.clip(np.rint(predict_piecewise_seasonal(m, x_fut)), 0, None)
+    return out
+
+
+def _ym_range_text(ym_list):
+    ym_list = sorted(ym_list)
+    if not ym_list:
+        return "-"
+    return ym_list[0] if len(ym_list) == 1 else f"{ym_list[0]} ~ {ym_list[-1]}"
+
+
+def render_alt_temp_versions(fut_df, forecast_temp_df, vf_products, train_data_pred,
+                             x_train_pred, actual_by_prod, train_years, temp_years):
+    """
+    업로드 기온 파일의 추가 버전 열(예: Max,min제외 / 이상기온제외)로 공급량을 다시 예측해
+    기본 예상기온(평균기온) 결과와 비교한다. 업로드 파일에 버전 열이 있을 때만 호출.
+      - 각 버전은 파일에 값이 있는 달만 해당 기온을 쓰고, 값이 없는 달은 기본 예상기온을 그대로 사용
+      - 단순N년평균은 기온과 무관해 버전별 결과가 같으므로 제외
+    """
+    alt_cols = get_alt_temp_cols(forecast_temp_df)
+    base_col = forecast_temp_df.attrs.get("base_col", "평균기온")
+    base_label = f"{base_col}(기본)"
+
+    temps = fut_df[["연", "월", "Year_Month", "예상기온"]].rename(columns={"예상기온": base_label})
+    temps = temps.merge(forecast_temp_df[["연", "월"] + alt_cols], on=["연", "월"], how="left")
+
+    versions = {}
+    for c in alt_cols:
+        applied = temps[c].notna()
+        if not applied.any():
+            continue
+        versions[c] = {
+            "temp": temps[c].fillna(temps[base_label]).values.astype(float),
+            "applied_ym": temps.loc[applied, "Year_Month"].tolist(),
+        }
+
+    st.markdown("---")
+    st.markdown("### 🌡️ 예상기온 버전별 예측 (업로드 파일)")
+    if not versions:
+        st.info("업로드 파일의 추가 기온 열(" + " · ".join(alt_cols) + ")에 예측 기간에 해당하는 값이 없습니다.")
+        return
+
+    ver_names = list(versions.keys())
+    st.markdown(f"""
+    <div class="info-box">
+    위 결과는 <b>{base_label}</b> 기준입니다. 아래는 업로드 파일의 <b>{' · '.join(ver_names)}</b> 기온으로 다시 예측한 결과입니다.<br>
+    각 버전은 <u>파일에 값이 있는 달만</u> 해당 기온을 쓰고, 값이 없는 달은 {base_label} 기온을 그대로 사용합니다.<br>
+    학습 연도·모델 식은 위와 같고 입력 기온만 바뀝니다. (단순N년평균은 기온과 무관해 제외)
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── 사용 기온 안내 + 기온 비교표 ──
+    st.markdown('<div class="sub">🌡️ 사용 기온</div>', unsafe_allow_html=True)
+    st.caption(f"• {base_label}: 예측 기간 전체 (위 예측과 동일한 예상기온)")
+    for c, v in versions.items():
+        st.caption(md_safe(f"• {c}: {_ym_range_text(v['applied_ym'])} ({len(v['applied_ym'])}개월) 파일 값 적용, "
+                           f"나머지 월은 {base_label} 사용"))
+
+    applied_any = np.zeros(len(temps), dtype=bool)
+    for c in versions:
+        applied_any |= temps[c].notna().values
+    tcomp = temps.loc[applied_any, ["Year_Month", base_label]].copy()
+    for c in versions:
+        tcomp[c] = temps.loc[applied_any, c]
+        tcomp[f"{c}−{base_col}"] = tcomp[c] - tcomp[base_label]
+    avg_row = {"Year_Month": "평균"}
+    for col in tcomp.columns[1:]:
+        avg_row[col] = tcomp[col].mean()
+    tcomp = pd.concat([tcomp, pd.DataFrame([avg_row])], ignore_index=True)
+    tdisp = tcomp.copy()
+    for col in tdisp.columns[1:]:
+        signed = "−" in col
+        tdisp[col] = tdisp[col].map(lambda x: "" if pd.isna(x) else (f"{x:+.1f}℃" if signed else f"{x:.1f}℃"))
+    with st.expander("📋 기온 비교표 (파일 값이 적용된 월)", expanded=True):
+        render_centered_table(tdisp)
+
+    for prod in vf_products:
+        st.markdown(f'<div class="sub">📦 {prod} — 기온 버전별 예측</div>', unsafe_allow_html=True)
+        y_train = train_data_pred[prod].values.astype(float)
+        split_df = train_data_pred[["월평균기온", prod]].rename(
+            columns={"월평균기온": "기온_split", prod: "공급량_split"})
+        base_pred = predict_temp_models(x_train_pred, y_train, split_df, temps[base_label].values.astype(float))
+        ver_pred = {c: predict_temp_models(x_train_pred, y_train, split_df, v["temp"])
+                    for c, v in versions.items()}
+        actual_df = actual_by_prod.get(prod)
+
+        # ① 버전 비교 요약 (선택 모델 기준)
+        model_sel = st.selectbox("비교할 모델", list(base_pred.keys()), key=f"altv_model_{prod}")
+        comp = temps[["연", "Year_Month"]].copy()
+        comp[base_label] = base_pred[model_sel]
+        for c in versions:
+            comp[c] = ver_pred[c].get(model_sel, np.nan)
+
+        st.markdown(f"**📆 연도별 비교 — {model_sel}**")
+        yearly = comp.groupby("연")[[base_label] + ver_names].sum().reset_index()
+        for c in ver_names:
+            yearly[f"{c}−{base_col}"] = yearly[c] - yearly[base_label]
+            yearly[f"{c}/{base_col}(%)"] = np.where(yearly[base_label] != 0,
+                                                    yearly[c] / yearly[base_label].replace(0, np.nan) * 100, np.nan)
+        order = ["연", base_label]
+        for c in ver_names:
+            order += [c, f"{c}−{base_col}", f"{c}/{base_col}(%)"]
+        yearly = yearly[order]
+        ydisp = yearly.copy()
+        for c in ver_names:
+            ydisp[f"{c}/{base_col}(%)"] = ydisp[f"{c}/{base_col}(%)"].map(
+                lambda x: "" if pd.isna(x) else f"{x:.1f}%")
+        render_centered_table(ydisp, int_cols=[base_label] + ver_names + [f"{c}−{base_col}" for c in ver_names])
+
+        chart_df = comp.copy()
+        if actual_df is not None and not actual_df.empty:
+            chart_df = chart_df.merge(temps[["연", "월", "Year_Month"]], on=["연", "Year_Month"])
+            chart_df = chart_df.merge(actual_df, on=["연", "월"], how="left")
+        render_line_chart(chart_df, "Year_Month",
+                          (["실적"] if "실적" in chart_df.columns else []) + [base_label] + ver_names,
+                          height=380, title=f"{prod} — {model_sel} 기온 버전별 월별 예측")
+
+        # ② 버전별 상세 (모델 3종 · 연도별 → 월별 → 다운로드)
+        for c in ver_names:
+            with st.expander(f"🌡️ 기온 버전: {c} — 모델별 상세 결과", expanded=False):
+                st.caption(md_safe(f"사용 기온: {c} ({_ym_range_text(versions[c]['applied_ym'])}), "
+                                   f"그 외 월은 {base_label}"))
+                vcomp = temps[["연", "월", "Year_Month"]].copy()
+                vcomp["예상기온"] = versions[c]["temp"]
+                for k, arr in ver_pred[c].items():
+                    vcomp[k] = arr
+                if actual_df is not None and not actual_df.empty:
+                    vcomp = vcomp.merge(actual_df, on=["연", "월"], how="left")
+                has_act = "실적" in vcomp.columns and vcomp["실적"].notna().any()
+                model_cols = list(ver_pred[c].keys())
+                cols = (["실적"] if has_act else []) + model_cols
+                target = "실적" if has_act else None
+
+                st.markdown("**📆 연도별 합산**")
+                yearly_v = render_yearly_diff_table(vcomp, target, cols,
+                                                    key_prefix=f"altv_y_{prod}_{c}",
+                                                    target_label="실적" if has_act else None,
+                                                    show_mae=has_act)
+                diff_v = _build_diff_table(vcomp, "Year_Month", target, cols,
+                                           target_label="실적" if has_act else None)
+                diff_v = diff_v.merge(vcomp[["Year_Month", "예상기온"]], on="Year_Month", how="left")
+                diff_v = diff_v[["Year_Month", "예상기온"] + [x for x in diff_v.columns
+                                                          if x not in ("Year_Month", "예상기온")]]
+                st.markdown("**🗂️ 월별**")
+                render_diff_table(diff_v, "Year_Month",
+                                  target_col=target if (target and target in diff_v.columns) else None,
+                                  key_prefix=f"altv_m_{prod}_{c}", show_mae=has_act)
+
+                ver_note = (f"{c} (업로드 파일, {_ym_range_text(versions[c]['applied_ym'])} 적용 / "
+                            f"그 외 월 {base_label})")
+                csv_v = (download_header(prod, train_years, temp_years, temp_version=ver_note)
+                         + "[연도별 누계]\n" + yearly_v.to_csv(index=False)
+                         + "\n[월별]\n" + diff_v.to_csv(index=False)).encode("utf-8-sig")
+                safe_c = re.sub(r"[^0-9A-Za-z가-힣]+", "", c)
+                st.download_button(f"📥 {prod} 예측 결과 다운로드 ({c})", data=csv_v,
+                                   file_name=f"공급량예측_{prod}_{safe_c}.csv", mime="text/csv",
+                                   key=f"dl_altv_{prod}_{c}")
+        st.markdown("---")
 
 
 def _dynamic_fmt(df, x_col):
@@ -1692,6 +1873,10 @@ def main():
             forecast_temp_df = _parse_uploaded_temp(uploaded_temp)
             if forecast_temp_df is not None:
                 st.success(f"✅ 예상기온 {len(forecast_temp_df)}개월 로드")
+                _alt_cols_sb = get_alt_temp_cols(forecast_temp_df)
+                if _alt_cols_sb:
+                    st.caption("추가 기온 버전: " + " · ".join(_alt_cols_sb)
+                               + " → '공급량 예측 검증' 탭 예측 실행 시 하단에 버전별 결과 표시")
 
         st.markdown("---")
         with st.expander("📥 데이터 로드 상태", expanded=False):
@@ -2224,6 +2409,13 @@ def main():
                     for y in roll_yrs:
                         yr_labels.append(f"{y}(추정)" if y not in actual_years_set else str(y))
                     cap_parts.append(f"{py}년→{','.join(yr_labels)}년 평균")
+            if forecast_temp_df is not None:
+                _base_col_u = forecast_temp_df.attrs.get("base_col", "평균기온")
+                _u_ym = fut_df_vf[["연", "월"]].merge(forecast_temp_df[["연", "월"]], on=["연", "월"])
+                _u_list = [f"{int(a)}-{int(b):02d}" for a, b in zip(_u_ym["연"], _u_ym["월"])]
+                st.info(md_safe(f"🌡️ 사용 기온: 업로드 파일 **'{_base_col_u}'** 열 "
+                                f"({_ym_range_text(_u_list)}, {len(_u_list)}개월) → "
+                                f"파일에 없는 월은 실측 기온, 그다음 롤링 평균으로 채움"))
             st.caption(md_safe(f"🌡️ 예상기온 산출 (롤링 {N_roll}년 평균): " + " | ".join(cap_parts)))
 
             # 단순N년평균 라벨
@@ -2232,6 +2424,7 @@ def main():
             fut_df_vf["Year_Month"] = fut_df_vf.apply(
                 lambda r: f"{int(r['연'])}-{int(r['월']):02d}", axis=1)
 
+            actual_by_prod = {}   # 기온 버전별 예측 섹션에서 실적 재사용
             for prod in vf_products:
                 y_train_pred = train_data_pred[prod].values.astype(float)
                 st.markdown(f'<div class="sub">📦 {prod}</div>', unsafe_allow_html=True)
@@ -2293,6 +2486,7 @@ def main():
                 if not actual_in_fut.empty:
                     pred_comp = pred_comp.merge(actual_in_fut, on=["연", "월"], how="left")
                 has_actual_pred = "실적" in pred_comp.columns and pred_comp["실적"].notna().any()
+                actual_by_prod[prod] = actual_in_fut
 
                 # 차트용 컬럼
                 agg_cols_pred = (["실적"] if has_actual_pred else []) + ["Poly-3 단일"]
@@ -2355,7 +2549,9 @@ def main():
 
                 # CSV 다운로드
                 # CSV 구성: ① 조건(상품·학습연도·기온) → ② 연도별 누계 → ③ 월별 값
-                csv_pred = (download_header(prod, vf_train_years, temp_avg_years_vf)
+                _main_ver_note = (f"{forecast_temp_df.attrs.get('base_col', '평균기온')} (업로드 파일)"
+                                  if forecast_temp_df is not None else None)
+                csv_pred = (download_header(prod, vf_train_years, temp_avg_years_vf, temp_version=_main_ver_note)
                             + "[연도별 누계]\n" + yearly_pred.to_csv(index=False)
                             + "\n[월별]\n" + disp_pred.to_csv(index=False)).encode("utf-8-sig")
                 st.download_button(f"📥 {prod} 예측 결과 다운로드", data=csv_pred,
@@ -2462,6 +2658,12 @@ def main():
                                    key=f"dl_sc_{prod}")
 
                 st.markdown("---")
+
+            # ── 업로드 기온 파일에 추가 버전 열(Max,min제외 / 이상기온제외 등)이 있을 때만 표시 ──
+            if get_alt_temp_cols(forecast_temp_df):
+                render_alt_temp_versions(fut_df_vf, forecast_temp_df, vf_products, train_data_pred,
+                                         x_train_pred, actual_by_prod,
+                                         vf_train_years, temp_avg_years_vf)
 
     # ══════════════════════════════════════════
     # ── TAB 3: 공급량 예측 ──
@@ -2660,6 +2862,13 @@ def main():
 
 
 def _parse_uploaded_temp(uploaded_file):
+    """
+    예상기온 업로드 파일 파싱.
+    - 기본 기온 열: '예상' → '평균기온' → '기온' 포함 열 순서로 찾아 '예상기온'으로 사용
+    - 그 밖의 숫자 열(예: 'Max,min제외', '이상기온제외')은 '기온 버전' 열로 그대로 보존
+      → 공급량 예측 검증 탭에서 기온 버전별 예측을 추가로 보여줄 때 사용
+    반환 DataFrame: 연, 월, 예상기온, [버전 열...]  (attrs['base_col'] = 원래 기본 열 이름)
+    """
     try:
         name = getattr(uploaded_file, "name", "")
         if name.lower().endswith(".csv"):
@@ -2667,8 +2876,9 @@ def _parse_uploaded_temp(uploaded_file):
         else:
             df = pd.read_excel(uploaded_file, engine="openpyxl")
         df.columns = [str(c).strip() for c in df.columns]
+        df = df.loc[:, [c for c in df.columns if not c.startswith("Unnamed")]]
+        date_col = None
         if "연" not in df.columns and "월" not in df.columns:
-            date_col = None
             for c in df.columns:
                 if c in ["날짜", "일자", "date", "Date"]:
                     date_col = c; break
@@ -2677,21 +2887,39 @@ def _parse_uploaded_temp(uploaded_file):
             df["날짜"] = pd.to_datetime(df[date_col], errors="coerce")
             df["연"] = df["날짜"].dt.year
             df["월"] = df["날짜"].dt.month
+        skip_cols = {"연", "월", "날짜", "일자", date_col}
+
         temp_col = None
-        for c in df.columns:
-            if "예상" in c or "평균기온" in c or "기온" in c or "temp" in c.lower():
-                temp_col = c; break
+        for keys in (("예상",), ("평균기온",), ("기온", "temp")):
+            for c in df.columns:
+                if c in skip_cols:
+                    continue
+                if any(k in c or k in c.lower() for k in keys):
+                    temp_col = c; break
+            if temp_col:
+                break
         if temp_col is None:
             for c in df.columns:
-                if c not in ["연", "월", "날짜", "일자"] and pd.api.types.is_numeric_dtype(df[c]):
+                if c not in skip_cols and pd.api.types.is_numeric_dtype(df[c]):
                     temp_col = c; break
         if temp_col is None:
             st.sidebar.error("예상기온 파일에서 기온 열을 찾지 못했습니다.")
             return None
+
+        df = df.dropna(subset=["연", "월"])
         result = pd.DataFrame({
             "연": df["연"].astype(int), "월": df["월"].astype(int),
             "예상기온": pd.to_numeric(df[temp_col], errors="coerce"),
-        }).dropna()
+        })
+        # 추가 기온 버전 열 (값이 하나라도 있는 숫자 열만)
+        for c in df.columns:
+            if c in skip_cols or c == temp_col:
+                continue
+            vals = pd.to_numeric(df[c], errors="coerce")
+            if vals.notna().any():
+                result[c] = vals.values
+        result = result.dropna(subset=["예상기온"]).reset_index(drop=True)
+        result.attrs["base_col"] = temp_col
         return result
     except Exception as e:
         st.sidebar.error(f"예상기온 파일 파싱 실패: {e}")
