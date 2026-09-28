@@ -849,6 +849,12 @@ def split_eq_caption(label, models, w_data, s_data, x_col="기온_split", y_col=
     return f"{label} — " + " | ".join(parts)
 
 
+def md_safe(text):
+    """Streamlit 마크다운에서 '~'가 두 번 나오면 그 사이가 취소선으로 바뀌므로 '~'를 이스케이프한다.
+    예) '1~9월 실측, 10~12월' → 취소선 없이 그대로 표시"""
+    return str(text).replace("~", "\\~")
+
+
 def fmt_year_list(years):
     """연도 목록을 '2021~2026년'(연속) 또는 '2021·2023·2025년'(비연속) 형태로 만든다.
     (CSV에서 칸이 나뉘지 않도록 쉼표 대신 '·' 사용)"""
@@ -1445,7 +1451,7 @@ ${poly_eq_str(cs, isu)}$
             elif roll_yrs:
                 yr_labels = [f"{y}(추정)" if y not in actual_meter_years_set else str(y) for y in roll_yrs]
                 cap_parts_c.append(f"{fy}년→{','.join(yr_labels)}년 평균")
-        st.caption(f"🌡️ 예측기온 산출 (롤링 {N_roll_c}년 평균): " + " | ".join(cap_parts_c))
+        st.caption(md_safe(f"🌡️ 예측기온 산출 (롤링 {N_roll_c}년 평균): " + " | ".join(cap_parts_c)))
 
         agg_cols_fut = (['판매량_계획'] if has_plan_future else []) + ([TARGET] if has_actual else []) \
             + ['예측_판매량_v1'] + (['예측_판매량_v2'] if has_cubic_split else []) + ['예측_판매량_v3']
@@ -1701,7 +1707,7 @@ def main():
                 st.error(f"❌ 판매량: {err3}")
             else:
                 st.success(f"✅ 판매량 ({len(sales_df)}개월)")
-            st.caption(f"데이터 기간: {min(years_all)}~{max(years_all)}년 · 월 데이터 {len(merged)}건")
+            st.caption(md_safe(f"데이터 기간: {min(years_all)}~{max(years_all)}년 · 월 데이터 {len(merged)}건"))
 
     # ══════════════════════════════════════════
     # ── TAB 1: 학습 기간 추천 ──
@@ -2218,7 +2224,7 @@ def main():
                     for y in roll_yrs:
                         yr_labels.append(f"{y}(추정)" if y not in actual_years_set else str(y))
                     cap_parts.append(f"{py}년→{','.join(yr_labels)}년 평균")
-            st.caption(f"🌡️ 예상기온 산출 (롤링 {N_roll}년 평균): " + " | ".join(cap_parts))
+            st.caption(md_safe(f"🌡️ 예상기온 산출 (롤링 {N_roll}년 평균): " + " | ".join(cap_parts)))
 
             # 단순N년평균 라벨
             naive_label_pred = f"단순{len(temp_avg_years_vf)}년평균"
@@ -2327,7 +2333,7 @@ def main():
 
                 # 연도별 시나리오 합산
                 st.markdown("**📆 연도별 시나리오 합산**")
-                render_yearly_diff_table(pred_comp, pred_target_col, table_series_pred,
+                yearly_pred = render_yearly_diff_table(pred_comp, pred_target_col, table_series_pred,
                                          key_prefix=f"pred_yearly_{prod}",
                                          target_label="실적" if has_actual_pred else None,
                                          show_mae=has_actual_pred)
@@ -2348,8 +2354,10 @@ def main():
                                   show_mae=has_actual_pred)
 
                 # CSV 다운로드
+                # CSV 구성: ① 조건(상품·학습연도·기온) → ② 연도별 누계 → ③ 월별 값
                 csv_pred = (download_header(prod, vf_train_years, temp_avg_years_vf)
-                            + disp_pred.to_csv(index=False)).encode("utf-8-sig")
+                            + "[연도별 누계]\n" + yearly_pred.to_csv(index=False)
+                            + "\n[월별]\n" + disp_pred.to_csv(index=False)).encode("utf-8-sig")
                 st.download_button(f"📥 {prod} 예측 결과 다운로드", data=csv_pred,
                                    file_name=f"공급량예측_{prod}.csv", mime="text/csv",
                                    key=f"dl_pred_{prod}")
