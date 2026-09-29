@@ -1054,7 +1054,7 @@ def render_yearly_diff_table(monthly_raw_df, target_col, selected_cols, key_pref
                 continue
             monthly_diff[c] = tmp[c] - tmp[target_col]
             with np.errstate(divide='ignore', invalid='ignore'):
-                monthly_pct[c] = np.where(tmp[c] != 0, tmp[target_col] / tmp[c] * 100, np.nan)
+                monthly_pct[c] = np.where(tmp[c] != 0, (tmp[target_col] / tmp[c] - 1) * 100, np.nan)
 
     out = pd.DataFrame({'Year': yearly_raw['Year']})
     pending, target_seen = [], False
@@ -1070,7 +1070,7 @@ def render_yearly_diff_table(monthly_raw_df, target_col, selected_cols, key_pref
             out[f'{c}\n{label}대비차이'] = diff_val
             with np.errstate(divide='ignore', invalid='ignore'):
                 out[f'{c}\n{label}대비오차율(%)'] = np.where(
-                    yearly_raw[c] != 0, yearly_raw[target_col] / yearly_raw[c] * 100, np.nan)
+                    yearly_raw[c] != 0, (yearly_raw[target_col] / yearly_raw[c] - 1) * 100, np.nan)
 
     for c in cols:
         out[c] = yearly_raw[c]
@@ -1112,7 +1112,7 @@ def _build_diff_table(df, x_col, target_col, selected_cols, target_label=None):
         out[f'{colname}\n{label}대비차이'] = df[colname] - df[target_col]
         with np.errstate(divide='ignore', invalid='ignore'):
             out[f'{colname}\n{label}대비오차율(%)'] = np.where(
-                df[colname] != 0, df[target_col] / df[colname] * 100, np.nan)
+                df[colname] != 0, (df[target_col] / df[colname] - 1) * 100, np.nan)
 
     for c in cols:
         out[c] = df[c]
