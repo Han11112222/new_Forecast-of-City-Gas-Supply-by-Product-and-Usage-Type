@@ -2232,9 +2232,75 @@ def main():
                 fallback_single_vf = merged["월평균기온"].mean()
                 fut_df_vf["예상기온"] = fut_df_vf["예상기온"].fillna(fallback_single_vf)
 
+            # ── Y-1 기온사용: 종료 연도의 예상기온을 직전연도 기온으로 교체 ──
+            y1_cap_text = None  # 캡션에 추가할 Y-1 정보
+            if use_y1_temp:
+                from datetime import date as _date
+                _today = _date.today()
+                target_y1_year = pred_end_y_vf  # 종료 연도
+                prev_year = target_y1_year - 1   # Y-1
+                prev2_year = target_y1_year - 2   # Y-2
+
+                # Y-1의 완료된 월 판별
+                if prev_year == _today.year:
+                    complete_months_y1 = list(range(1, _today.month))
+                    incomplete_months_y1 = list(range(_today.month, 13))
+                elif prev_year < _today.year:
+                    complete_months_y1 = list(range(1, 13))
+                    incomplete_months_y1 = []
+                else:
+                    complete_months_y1 = []
+                    incomplete_months_y1 = list(range(1, 13))
+
+                actual_temp_idx_y1 = temp_monthly.set_index(["연", "월"])["월평균기온"]
+                y1_temps = {}
+                y1_source_info = {}
+
+                for m in range(1, 13):
+                    if m in complete_months_y1:
+                        key = (prev_year, m)
+                        if key in actual_temp_idx_y1.index:
+                            y1_temps[m] = actual_temp_idx_y1.loc[key]
+                            y1_source_info[m] = f"{prev_year}년"
+                        else:
+                            key2 = (prev2_year, m)
+                            if key2 in actual_temp_idx_y1.index:
+                                y1_temps[m] = actual_temp_idx_y1.loc[key2]
+                                y1_source_info[m] = f"{prev2_year}년(폴백)"
+                    else:
+                        key2 = (prev2_year, m)
+                        if key2 in actual_temp_idx_y1.index:
+                            y1_temps[m] = actual_temp_idx_y1.loc[key2]
+                            y1_source_info[m] = f"{prev2_year}년"
+                        else:
+                            overall_m = temp_monthly[temp_monthly["월"] == m]["월평균기온"].mean()
+                            y1_temps[m] = overall_m
+                            y1_source_info[m] = "전체평균(폴백)"
+
+                # 종료 연도 행의 예상기온을 Y-1 기온으로 교체
+                y1_mask = (fut_df_vf["연"] == target_y1_year)
+                if y1_mask.any():
+                    fut_df_vf.loc[y1_mask, "예상기온"] = \
+                        fut_df_vf.loc[y1_mask, "월"].map(y1_temps)
+
+                # 캡션 텍스트 구성
+                if complete_months_y1 and incomplete_months_y1:
+                    y1_cap_text = (f"{target_y1_year}년: Y-1 기온 적용 "
+                                   f"(1~{max(complete_months_y1)}월→{prev_year}년, "
+                                   f"{min(incomplete_months_y1)}~12월→{prev2_year}년, "
+                                   f"기준일 {_today.strftime('%Y-%m-%d')})")
+                elif complete_months_y1:
+                    y1_cap_text = f"{target_y1_year}년: Y-1 기온 적용 (1~12월 모두 {prev_year}년)"
+                else:
+                    y1_cap_text = f"{target_y1_year}년: Y-1 기온 적용 (1~12월 모두 {prev2_year}년)"
+
             # 캡션: 각 연도별 기온 출처 표시
             cap_parts = []
             for py in sorted(set(int(y) for y in fut_df_vf["연"].unique())):
+                # Y-1 적용된 연도는 별도 캡션으로 처리
+                if use_y1_temp and py == pred_end_y_vf and y1_cap_text:
+                    cap_parts.append(y1_cap_text)
+                    continue
                 total_months = len(fut_df_vf[fut_df_vf["연"] == py])
                 actual_ms = actual_months_map.get(py, [])
                 n_actual = len(actual_ms)
@@ -2254,7 +2320,8 @@ def main():
                     for y in roll_yrs:
                         yr_labels.append(f"{y}(추정)" if y not in actual_years_set else str(y))
                     cap_parts.append(f"{py}년→{','.join(yr_labels)}년 평균")
-            st.caption(f"🌡️ 예상기온 산출 (롤링 {N_roll}년 평균): " + " | ".join(cap_parts))
+            cap_method = "Y-1 기온 적용" if use_y1_temp else f"롤링 {N_roll}년 평균"
+            st.caption(f"🌡️ 예상기온 산출 ({cap_method}): " + " | ".join(cap_parts))
 
             # 단순N년평균 라벨
             naive_label_pred = f"단순{len(temp_avg_years_vf)}년평균"
@@ -2438,131 +2505,6 @@ def main():
                     sum_row_sc[sname] = int(sc_table[sname].sum())
                 sc_table_full = pd.concat([sc_table, pd.DataFrame([sum_row_sc])], ignore_index=True)
                 render_centered_table(sc_table_full, int_cols=list(scenarios_vf.keys()))
-
-                # ── Y-1 기온사용 예측 ──
-                if use_y1_temp:
-                    st.markdown("---")
-                    target_y1_year = pred_end_y_vf  # 예측 종료 연도
-                    prev_year = target_y1_year - 1   # Y-1
-                    prev2_year = target_y1_year - 2   # Y-2
-
-                    # 오늘 날짜 기준으로 Y-1의 완료된 월 판별
-                    from datetime import date as _date
-                    _today = _date.today()
-                    if prev_year == _today.year:
-                        # Y-1이 올해 → 현재 월 미만만 완료 (현재 월은 진행 중)
-                        complete_months = list(range(1, _today.month))
-                        incomplete_months = list(range(_today.month, 13))
-                    elif prev_year < _today.year:
-                        # Y-1이 과거 → 모든 월 완료
-                        complete_months = list(range(1, 13))
-                        incomplete_months = []
-                    else:
-                        # Y-1이 미래 → 완료된 월 없음
-                        complete_months = []
-                        incomplete_months = list(range(1, 13))
-
-                    # Y-1 기온 구성: 완료 월은 Y-1 기온, 미완료 월은 Y-2 기온
-                    y1_temps = {}
-                    actual_temp_idx = temp_monthly.set_index(["연", "월"])["월평균기온"]
-                    y1_source_info = {}  # 캡션용: 각 월의 기온 출처
-
-                    for m in range(1, 13):
-                        if m in complete_months:
-                            key = (prev_year, m)
-                            if key in actual_temp_idx.index:
-                                y1_temps[m] = actual_temp_idx.loc[key]
-                                y1_source_info[m] = f"{prev_year}년"
-                            else:
-                                # Y-1 해당 월 데이터 없으면 Y-2로 폴백
-                                key2 = (prev2_year, m)
-                                if key2 in actual_temp_idx.index:
-                                    y1_temps[m] = actual_temp_idx.loc[key2]
-                                    y1_source_info[m] = f"{prev2_year}년(폴백)"
-                        else:
-                            key2 = (prev2_year, m)
-                            if key2 in actual_temp_idx.index:
-                                y1_temps[m] = actual_temp_idx.loc[key2]
-                                y1_source_info[m] = f"{prev2_year}년"
-                            else:
-                                # Y-2도 없으면 전체 평균 폴백
-                                overall = temp_monthly[temp_monthly["월"] == m]["월평균기온"].mean()
-                                y1_temps[m] = overall
-                                y1_source_info[m] = "전체평균(폴백)"
-
-                    # Y-1 예측 DataFrame 구성 (target_y1_year 12개월)
-                    y1_df = pd.DataFrame({"연": target_y1_year, "월": range(1, 13)})
-                    y1_df["예상기온"] = y1_df["월"].map(y1_temps)
-                    y1_df["Year_Month"] = y1_df.apply(
-                        lambda r: f"{int(r['연'])}-{int(r['월']):02d}", axis=1)
-
-                    x_y1 = y1_df["예상기온"].values.astype(float)
-
-                    # 4가지 모델 예측
-                    y1_p1, _, _, _ = fit_poly3(x_train_pred, y_train_pred, x_y1)
-                    y1_p1 = np.clip(np.rint(y1_p1).astype(np.int64), 0, None)
-
-                    y1_p2 = np.clip(np.rint(predict_piecewise_seasonal(models_p2, x_y1)).astype(np.int64), 0, None) \
-                        if has_p2 else np.full(12, np.nan)
-
-                    y1_p3 = np.clip(np.rint(predict_piecewise_seasonal(models_p3, x_y1)).astype(np.int64), 0, None) \
-                        if has_p3 else np.full(12, np.nan)
-
-                    # 단순N년평균
-                    _y1_naive_used = rolling_year_map.get(target_y1_year, list(all_temp_years))
-                    if not _y1_naive_used:
-                        _y1_naive_used = list(all_temp_years)
-                    _y1_basis = merged[merged["연"].isin(_y1_naive_used)]
-                    _y1_monthly_naive = _y1_basis.groupby("월")[prod].mean()
-                    y1_p4 = y1_df["월"].map(_y1_monthly_naive).values
-
-                    # 결과 테이블 구성
-                    y1_result = y1_df[["Year_Month", "예상기온"]].copy()
-                    y1_result["Poly-3 단일"] = y1_p1
-                    if has_p2:
-                        y1_result["분리·3차식"] = np.round(y1_p2).astype(float)
-                    if has_p3:
-                        y1_result["분리·2차식"] = np.round(y1_p3).astype(float)
-                    y1_result[naive_label_pred] = np.round(y1_p4).astype(float)
-
-                    # 기온 출처 캡션
-                    if complete_months and incomplete_months:
-                        cap_y1 = (f"1~{max(complete_months)}월 → {prev_year}년 기온, "
-                                  f"{min(incomplete_months)}~12월 → {prev2_year}년 기온 "
-                                  f"(기준일: {_today.strftime('%Y-%m-%d')})")
-                    elif complete_months:
-                        cap_y1 = f"1~12월 모두 {prev_year}년 기온"
-                    else:
-                        cap_y1 = f"1~12월 모두 {prev2_year}년 기온"
-
-                    st.markdown(f'<div class="sub">📅 Y-1 기온사용 — {target_y1_year}년 {prod} 예측</div>',
-                                unsafe_allow_html=True)
-                    st.caption(f"🌡️ {cap_y1}")
-
-                    # HTML 테이블 렌더링
-                    render_html_diff_table(y1_result, "Year_Month")
-
-                    # 합계 행
-                    sum_vals = {"Year_Month": "합계", "예상기온": ""}
-                    for c in y1_result.columns:
-                        if c in ("Year_Month", "예상기온"):
-                            continue
-                        sum_vals[c] = y1_result[c].sum()
-                    sum_df = pd.DataFrame([sum_vals])
-                    st.markdown(f"""
-<div style="background:#f0f9ff; border:1px solid #bae6fd; border-radius:6px; padding:10px 16px; margin-top:-0.5rem;">
-<b>📊 {target_y1_year}년 합계</b> &nbsp;|&nbsp;
-Poly-3 단일: <b>{y1_p1.sum():,.0f}</b>
-{' &nbsp;|&nbsp; 분리·3차식: <b>' + f'{np.nansum(y1_p2):,.0f}' + '</b>' if has_p2 else ''}
-{' &nbsp;|&nbsp; 분리·2차식: <b>' + f'{np.nansum(y1_p3):,.0f}' + '</b>' if has_p3 else ''}
-&nbsp;|&nbsp; {naive_label_pred}: <b>{np.nansum(y1_p4):,.0f}</b>
-</div>""", unsafe_allow_html=True)
-
-                    # CSV 다운로드
-                    csv_y1 = y1_result.to_csv(index=False).encode("utf-8-sig")
-                    st.download_button(f"📥 {prod} Y-1 예측 다운로드", data=csv_y1,
-                                       file_name=f"공급량예측_Y1_{prod}_{target_y1_year}.csv",
-                                       mime="text/csv", key=f"dl_y1_{prod}")
 
                 st.markdown("---")
 
