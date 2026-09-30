@@ -890,7 +890,7 @@ def _fmt_diff_value(col, val):
         return "-"
     if '오차율' in col or 'MAPE' in col:
         return f"{val:.1f}%"
-    if '기온' in col:
+    if '\n기온' in col or col in ('월평균기온', '예상기온', '검침기온', '실제기온', '기온'):
         return f"{val:.1f}℃"
     try:
         return f"{val:,.0f}"
@@ -1958,6 +1958,33 @@ def render_simulation_tab(merged, temp_monthly, supply_df, available_products, y
             # ── 월별 테이블 ──
             st.markdown(f"**🗂️ {sim_pred_year}년 월별 시나리오 비교**")
 
+            # ── 연도별 합계 박스 (월별 테이블 상단) ──
+            sum_box_cols_count = len(scenario_totals) + (1 if has_base else 0)
+            sum_box_cols = st.columns(sum_box_cols_count)
+            sb_idx = 0
+            if has_base:
+                sum_box_cols[sb_idx].markdown(f"""
+<div style="background:#dbeafe; border-radius:8px; padding:10px 14px; text-align:center; border:2px solid #3b82f6;">
+<div style="font-size:0.8rem; color:#1e40af; font-weight:600;">{latest_actual_year} 실적 합계</div>
+<div style="font-size:1.3rem; font-weight:700; color:#1e3a5f;">{base_total:,.0f}</div>
+</div>""", unsafe_allow_html=True)
+                sb_idx += 1
+            for si, (sn, st_val) in enumerate(scenario_totals.items()):
+                ci = si % len(sc_colors)
+                err_html = ""
+                if has_base and base_total > 0:
+                    err_pct = (st_val / base_total - 1) * 100
+                    err_sign = "+" if err_pct >= 0 else ""
+                    err_color = "#dc2626" if err_pct < 0 else "#166534"
+                    err_html = f'<div style="font-size:0.7rem; color:{err_color}; margin-top:2px;">오차율: {err_sign}{err_pct:.1f}%</div>'
+                sum_box_cols[sb_idx].markdown(f"""
+<div style="background:{sc_colors[ci]}; border-radius:8px; padding:10px 14px; text-align:center; border:2px solid {sc_borders[ci]};">
+<div style="font-size:0.8rem; color:{sc_text_colors[ci]}; font-weight:600;">{sn} 합계</div>
+<div style="font-size:1.3rem; font-weight:700; color:#1f2937;">{st_val:,}</div>
+{err_html}
+</div>""", unsafe_allow_html=True)
+                sb_idx += 1
+
             display_df = result_df[["Year_Month"]].copy()
             # 2026 실적 열
             if has_base and sim_pred_year != latest_actual_year:
@@ -1972,11 +1999,15 @@ def render_simulation_tab(merged, temp_monthly, supply_df, available_products, y
 
             # 합계 행
             sum_row = {"Year_Month": "합계"}
+            actual_col_name = f"{latest_actual_year} 실적"
             for c in display_df.columns:
                 if c == "Year_Month":
                     continue
-                if "기온" in c:
+                if '\n기온' in c:
                     sum_row[c] = ""
+                elif c == actual_col_name and has_base:
+                    # 확인된 실적값 사용 (스프레드시트 부분합 방지)
+                    sum_row[c] = base_total
                 else:
                     vals = pd.to_numeric(display_df[c], errors="coerce")
                     sum_row[c] = vals.sum()
