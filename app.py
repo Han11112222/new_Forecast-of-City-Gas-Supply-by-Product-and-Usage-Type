@@ -1553,35 +1553,92 @@ def render_sales_vs_supply(supply_df, sales_df):
 def _compute_temp_scenarios(temp_monthly, all_years, pred_year):
     """
     기온 시나리오 4가지를 계산한다.
+    공급량 예측 검증 탭과 동일한 롤링 평균 + 누적 추정 로직 사용.
+    (현재 월 이후 데이터는 불완전 → 이전 연도 롤링 평균으로 대체)
+
     all_years: 전체 실적 연도 리스트
     pred_year: 예측 대상 연도
 
     반환: dict {시나리오명: {월: 기온}}
-    1) 3년 평균: pred_year 직전 3개년 월별 평균
-    2) Max,min제외: 전체 실적 연도에서 월별 최대·최소 제거 후 평균
-    3) 전년도 기온: pred_year - 1 연도의 실제 기온
-    4) 이상기온 제외: 전체 실적 연도에서 IQR 방식 이상치 제거 후 평균
+    1) 3년 평균: pred_year 직전 3개년 월별 평균 (누적 추정 포함)
+    2) Max,min제외: 완성된 데이터에서 월별 최대·최소 제거 후 평균
+    3) 전년도 기온: pred_year - 1 연도의 실제/추정 기온
+    4) 이상기온 제외: 완성된 데이터에서 IQR 방식 이상치 제거 후 평균
     """
+    from datetime import date as _date
+    _today = _date.today()
+    current_year = _today.year
+    current_month = _today.month
+
     # 2020년 이후 연도만 사용
     filtered_years = [y for y in all_years if y >= 2020]
-    ref_data = temp_monthly[temp_monthly["연"].isin(filtered_years)]
+
+    # ── temp_pool 구축 (공급량 예측 검증과 동일) ──
+    # 현재 월 이후의 현재 연도 데이터는 불완전 → 제외
+    temp_pool = {}
+    for _, row in temp_monthly.iterrows():
+        y, m = int(row["연"]), int(row["월"])
+        if y < 2020:
+            continue
+        # 현재 연도의 현재 월 이후는 불완전 데이터이므로 제외
+        if y == current_year and m >= current_month:
+            continue
+        temp_pool[(y, m)] = float(row["월평균기온"])
+
+    pool_years = set(y for y, _ in temp_pool.keys())
+
+    # ── 불완전 연도의 빈 월을 롤링 평균으로 채움 (누적 추정) ──
+    N_roll = 3
+    years_to_fill = sorted(y for y in filtered_years if y <= pred_year)
+    # pred_year도 포함 (미래 연도)
+    if pred_year not in years_to_fill:
+        years_to_fill.append(pred_year)
+        years_to_fill.sort()
+
+    for y in years_to_fill:
+        missing_months = [m for m in range(1, 13) if (y, m) not in temp_pool]
+        if not missing_months:
+            pool_years.add(y)
+            continue
+        # 롤링 평균 대상 연도 결정 (직전 N_roll년)
+        ideal = list(range(y - N_roll, y))
+        used = [uy for uy in ideal if uy in pool_years]
+        if len(used) < N_roll:
+            before = sorted([uy for uy in pool_years if uy < y])
+            used = before[-N_roll:] if len(before) >= N_roll else (before if before else sorted(pool_years))
+        if not used:
+            used = sorted(pool_years) if pool_years else []
+
+        # 빈 월을 사용 가능한 연도의 평균으로 채움
+        for m in missing_months:
+            vals = [temp_pool[(uy, m)] for uy in used if (uy, m) in temp_pool]
+            if vals:
+                temp_pool[(y, m)] = sum(vals) / len(vals)
+        pool_years.add(y)
+
+    # ── 시나리오 계산 ──
+    scenarios = {}
     prev_year = pred_year - 1
 
-    # 3년 평균용: pred_year 직전 3개년
-    recent_3 = sorted([y for y in filtered_years if y < pred_year])[-3:]
-    recent_3_data = temp_monthly[temp_monthly["연"].isin(recent_3)]
-    prev_data = temp_monthly[temp_monthly["연"] == prev_year]
-
-    scenarios = {}
+    # 3년 평균용: pred_year 직전 3개년 (pool 데이터 사용)
+    recent_3 = sorted([y for y in pool_years if y < pred_year])[-3:]
 
     # ── 1) 3년 평균 ──
-    avg_by_month = recent_3_data.groupby("월")["월평균기온"].mean()
-    scenarios["3년 평균"] = {m: float(avg_by_month.get(m, np.nan)) for m in range(1, 13)}
+    three_yr_temps = {}
+    for m in range(1, 13):
+        vals = [temp_pool[(y, m)] for y in recent_3 if (y, m) in temp_pool]
+        if vals:
+            three_yr_temps[m] = float(sum(vals) / len(vals))
+        else:
+            three_yr_temps[m] = np.nan
+    scenarios["3년 평균"] = three_yr_temps
 
     # ── 2) Max, min 제외 평균 ──
+    # pool에서 완성된 연도 데이터 사용
+    ref_years = sorted([y for y in pool_years if y < pred_year])
     maxmin_temps = {}
     for m in range(1, 13):
-        vals = ref_data[ref_data["월"] == m]["월평균기온"].dropna().values
+        vals = np.array([temp_pool[(y, m)] for y in ref_years if (y, m) in temp_pool])
         if len(vals) >= 3:
             vals_sorted = np.sort(vals)
             trimmed = vals_sorted[1:-1]
@@ -1593,19 +1650,42 @@ def _compute_temp_scenarios(temp_monthly, all_years, pred_year):
     scenarios["Max,min제외"] = maxmin_temps
 
     # ── 3) 전년도 기온 ──
+    # 공급량 예측 검증의 Y-1 로직과 동일:
+    # 현재 연도 == prev_year이면 현재 월 미만은 실측, 현재 월 이후는 Y-2 사용
     prev_temps = {}
-    for m in range(1, 13):
-        row = prev_data[prev_data["월"] == m]
-        if not row.empty:
-            prev_temps[m] = float(row["월평균기온"].values[0])
-        else:
-            prev_temps[m] = scenarios["3년 평균"].get(m, np.nan)
+    prev2_year = prev_year - 1
+    if prev_year == current_year:
+        # 완료된 월: prev_year 실측, 미완료 월: prev2_year
+        for m in range(1, 13):
+            if m < current_month:
+                # 완료된 월 → prev_year 실측
+                key = (prev_year, m)
+                if key in temp_pool:
+                    prev_temps[m] = float(temp_pool[key])
+                else:
+                    key2 = (prev2_year, m)
+                    prev_temps[m] = float(temp_pool[key2]) if key2 in temp_pool else three_yr_temps.get(m, np.nan)
+            else:
+                # 미완료 월(현재 월 포함) → prev2_year
+                key2 = (prev2_year, m)
+                if key2 in temp_pool:
+                    prev_temps[m] = float(temp_pool[key2])
+                else:
+                    prev_temps[m] = three_yr_temps.get(m, np.nan)
+    else:
+        # prev_year가 과거 연도 → pool에서 전체 12개월 가져옴
+        for m in range(1, 13):
+            key = (prev_year, m)
+            if key in temp_pool:
+                prev_temps[m] = float(temp_pool[key])
+            else:
+                prev_temps[m] = three_yr_temps.get(m, np.nan)
     scenarios["전년도 기온"] = prev_temps
 
     # ── 4) 이상기온 제외 (IQR 방식) ──
     iqr_temps = {}
     for m in range(1, 13):
-        vals = ref_data[ref_data["월"] == m]["월평균기온"].dropna().values
+        vals = np.array([temp_pool[(y, m)] for y in ref_years if (y, m) in temp_pool])
         if len(vals) >= 4:
             q1 = np.percentile(vals, 25)
             q3 = np.percentile(vals, 75)
