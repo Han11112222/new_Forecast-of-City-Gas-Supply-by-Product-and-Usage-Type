@@ -1584,8 +1584,9 @@ def _compute_temp_scenarios(temp_monthly, all_years, pred_year):
 
     pool_years = set(y for y, _ in temp_pool.keys())
 
-    # ── 불완전 연도의 빈 월을 롤링 평균으로 채움 (누적 추정) ──
-    N_roll = 3
+    # ── 불완전 연도의 빈 월을 Y-1(전년도) 동월 기온으로 채움 ──
+    # 로직: 온전하지 않은 달은 Y-1년의 동월 기온을 가져온 뒤,
+    #       3년 평균 등 시나리오 계산에 사용 (예: 2026년 9~12월 → 2025년 9~12월 기온 사용)
     years_to_fill = sorted(y for y in filtered_years if y <= pred_year)
     # pred_year도 포함 (미래 연도)
     if pred_year not in years_to_fill:
@@ -1597,20 +1598,18 @@ def _compute_temp_scenarios(temp_monthly, all_years, pred_year):
         if not missing_months:
             pool_years.add(y)
             continue
-        # 롤링 평균 대상 연도 결정 (직전 N_roll년)
-        ideal = list(range(y - N_roll, y))
-        used = [uy for uy in ideal if uy in pool_years]
-        if len(used) < N_roll:
-            before = sorted([uy for uy in pool_years if uy < y])
-            used = before[-N_roll:] if len(before) >= N_roll else (before if before else sorted(pool_years))
-        if not used:
-            used = sorted(pool_years) if pool_years else []
-
-        # 빈 월을 사용 가능한 연도의 평균으로 채움
+        # Y-1(전년도) 동월 기온으로 대체
         for m in missing_months:
-            vals = [temp_pool[(uy, m)] for uy in used if (uy, m) in temp_pool]
-            if vals:
-                temp_pool[(y, m)] = sum(vals) / len(vals)
+            if (y - 1, m) in temp_pool:
+                temp_pool[(y, m)] = temp_pool[(y - 1, m)]
+            elif (y - 2, m) in temp_pool:
+                # Y-1도 없으면 Y-2 시도
+                temp_pool[(y, m)] = temp_pool[(y - 2, m)]
+            else:
+                # 최후 폴백: 사용 가능한 모든 연도의 동월 평균
+                vals = [temp_pool[(uy, m)] for uy in sorted(pool_years) if (uy, m) in temp_pool]
+                if vals:
+                    temp_pool[(y, m)] = sum(vals) / len(vals)
         pool_years.add(y)
 
     # ── 시나리오 계산 ──
