@@ -886,7 +886,7 @@ _DIFF_TABLE_CSS = """
 
 
 def _fmt_diff_value(col, val):
-    if val is None or (isinstance(val, float) and pd.isna(val)):
+    if val is None or val == "" or (isinstance(val, float) and pd.isna(val)):
         return "-"
     if '오차율' in col or 'MAPE' in col:
         return f"{val:.1f}%"
@@ -919,6 +919,41 @@ def render_html_diff_table(df, x_col, target_col=None):
     for _, row in df.iterrows():
         cells = "".join(
             f"<td{_cls(c)}>{_fmt_x_value(row[c]) if c == x_col else _fmt_diff_value(c, row[c])}</td>" for c in cols)
+        body += f"<tr>{cells}</tr>"
+
+    st.markdown(f"""{_DIFF_TABLE_CSS}
+<div class="difftbl-wrap">
+<table class="difftbl">
+<thead><tr>{hdr}</tr></thead>
+<tbody>{body}</tbody>
+</table>
+</div>""", unsafe_allow_html=True)
+
+
+def _render_temp_table(df, x_col):
+    """기온 전용 테이블 — 월 컬럼을 소수점 1자리로 표시."""
+    cols = list(df.columns)
+
+    def _cls(c):
+        if c == x_col:
+            return ' class="difftbl-x"'
+        return ""
+
+    def _fmt_temp(c, val):
+        if c == x_col:
+            return _fmt_x_value(val)
+        if val is None or val == "" or (isinstance(val, float) and pd.isna(val)):
+            return "-"
+        try:
+            return f"{float(val):.1f}"
+        except (TypeError, ValueError):
+            return str(val)
+
+    hdr = "".join(f"<th{_cls(c)}>{c}</th>" for c in cols)
+    body = ""
+    for _, row in df.iterrows():
+        cells = "".join(
+            f"<td{_cls(c)}>{_fmt_temp(c, row[c])}</td>" for c in cols)
         body += f"<tr>{cells}</tr>"
 
     st.markdown(f"""{_DIFF_TABLE_CSS}
@@ -1527,11 +1562,13 @@ def _compute_temp_scenarios(temp_monthly, all_years, pred_year):
     3) 전년도 기온: pred_year - 1 연도의 실제 기온
     4) 이상기온 제외: 전체 실적 연도에서 IQR 방식 이상치 제거 후 평균
     """
-    ref_data = temp_monthly[temp_monthly["연"].isin(all_years)]
+    # 2020년 이후 연도만 사용
+    filtered_years = [y for y in all_years if y >= 2020]
+    ref_data = temp_monthly[temp_monthly["연"].isin(filtered_years)]
     prev_year = pred_year - 1
 
     # 3년 평균용: pred_year 직전 3개년
-    recent_3 = sorted([y for y in all_years if y < pred_year])[-3:]
+    recent_3 = sorted([y for y in filtered_years if y < pred_year])[-3:]
     recent_3_data = temp_monthly[temp_monthly["연"].isin(recent_3)]
     prev_data = temp_monthly[temp_monthly["연"] == prev_year]
 
@@ -1652,6 +1689,8 @@ def render_simulation_tab(merged, temp_monthly, supply_df, available_products, y
 
     # ── 2026 실적 가져오기 (비교 기준) ──
     latest_actual_year = max(years_all)
+    # 개별난방용 2026 실적 (확인된 값)
+    _KNOWN_ACTUALS_2026 = {"개별난방용": 24_440_815_554}
     base_actual_totals = {}  # {상품: 연간합계}
     base_actual_monthly = {}  # {상품: {월: 값}}
     for prod in sim_products:
@@ -1679,11 +1718,16 @@ def render_simulation_tab(merged, temp_monthly, supply_df, available_products, y
                     monthly[int(row["월"])] = float(row[prod])
                 base_actual_totals[prod] = sum(monthly.values())
                 base_actual_monthly[prod] = monthly
+        # 확인된 실적값 fallback
+        if prod not in base_actual_totals and prod in _KNOWN_ACTUALS_2026 and latest_actual_year == 2026:
+            base_actual_totals[prod] = _KNOWN_ACTUALS_2026[prod]
 
     # ── 기온실적 테이블 표시 ──
     with st.expander("📊 기온실적 및 시나리오 기온 테이블", expanded=False):
         temp_table_rows = []
         for y in sorted(years_all):
+            if y < 2020:
+                continue
             row_data = {"구분": str(y)}
             for m in range(1, 13):
                 val = temp_monthly[(temp_monthly["연"] == y) & (temp_monthly["월"] == m)]["월평균기온"]
@@ -1696,7 +1740,7 @@ def render_simulation_tab(merged, temp_monthly, supply_df, available_products, y
                 row_data[f"{m}월"] = round(v, 1) if not np.isnan(v) else None
             temp_table_rows.append(row_data)
         temp_table_df = pd.DataFrame(temp_table_rows)
-        render_html_diff_table(temp_table_df, "구분")
+        _render_temp_table(temp_table_df, "구분")
 
     if st.button("🚀 시뮬레이션 실행", type="primary", key="btn_sim_run"):
         st.session_state["sim_run"] = True
