@@ -1689,11 +1689,29 @@ def render_simulation_tab(merged, temp_monthly, supply_df, available_products, y
 
     # ── 2026 실적 가져오기 (비교 기준) ──
     latest_actual_year = max(years_all)
-    # 개별난방용 2026 실적 (확인된 값)
-    _KNOWN_ACTUALS_2026 = {"개별난방용": 24_440_815_554}
+    # 개별난방용 2026 실적 (확인된 값) — 스프레드시트 부분합 대신 사용
+    _KNOWN_ACTUALS = {2026: {"개별난방용": 24_440_815_554}}
     base_actual_totals = {}  # {상품: 연간합계}
     base_actual_monthly = {}  # {상품: {월: 값}}
     for prod in sim_products:
+        # 확인된 실적값이 있으면 우선 사용 (스프레드시트 부분합 문제 방지)
+        if latest_actual_year in _KNOWN_ACTUALS and prod in _KNOWN_ACTUALS[latest_actual_year]:
+            base_actual_totals[prod] = _KNOWN_ACTUALS[latest_actual_year][prod]
+            # 월별 데이터도 가져오기 (그래프용)
+            if prod in supply_df.columns:
+                _sup_tmp = supply_df[[prod]].copy()
+                _sup_tmp["연"] = _sup_tmp.index.year
+                _sup_tmp["월"] = _sup_tmp.index.month
+                _sup_year = _sup_tmp[_sup_tmp["연"] == latest_actual_year]
+                if not _sup_year.empty:
+                    monthly = {}
+                    for m in range(1, 13):
+                        row = _sup_year[_sup_year["월"] == m]
+                        if not row.empty and row[prod].values[0] > 0:
+                            monthly[m] = float(row[prod].values[0])
+                    if monthly:
+                        base_actual_monthly[prod] = monthly
+            continue
         # supply_df에서 가져오기
         if prod in supply_df.columns:
             _sup_tmp = supply_df[[prod]].copy()
@@ -1718,9 +1736,6 @@ def render_simulation_tab(merged, temp_monthly, supply_df, available_products, y
                     monthly[int(row["월"])] = float(row[prod])
                 base_actual_totals[prod] = sum(monthly.values())
                 base_actual_monthly[prod] = monthly
-        # 확인된 실적값 fallback
-        if prod not in base_actual_totals and prod in _KNOWN_ACTUALS_2026 and latest_actual_year == 2026:
-            base_actual_totals[prod] = _KNOWN_ACTUALS_2026[prod]
 
     # ── 기온실적 테이블 표시 ──
     with st.expander("📊 기온실적 및 시나리오 기온 테이블", expanded=False):
