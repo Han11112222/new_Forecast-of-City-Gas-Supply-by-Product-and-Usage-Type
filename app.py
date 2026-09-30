@@ -1955,69 +1955,70 @@ def render_simulation_tab(merged, temp_monthly, supply_df, available_products, y
                 margin=dict(t=50, b=70), height=450)
             st.plotly_chart(fig_sim, use_container_width=True, config=dict(displaylogo=False))
 
-            # ── 월별 테이블 ──
-            st.markdown(f"**🗂️ {sim_pred_year}년 월별 시나리오 비교**")
-
-            # ── 연도별 합계 박스 (월별 테이블 상단) ──
-            sum_box_cols_count = len(scenario_totals) + (1 if has_base else 0)
-            sum_box_cols = st.columns(sum_box_cols_count)
-            sb_idx = 0
-            if has_base:
-                sum_box_cols[sb_idx].markdown(f"""
-<div style="background:#dbeafe; border-radius:8px; padding:10px 14px; text-align:center; border:2px solid #3b82f6;">
-<div style="font-size:0.8rem; color:#1e40af; font-weight:600;">{latest_actual_year} 실적 합계</div>
-<div style="font-size:1.3rem; font-weight:700; color:#1e3a5f;">{base_total:,.0f}</div>
-</div>""", unsafe_allow_html=True)
-                sb_idx += 1
-            for si, (sn, st_val) in enumerate(scenario_totals.items()):
-                ci = si % len(sc_colors)
-                err_html = ""
-                if has_base and base_total > 0:
-                    err_pct = (st_val / base_total - 1) * 100
-                    err_sign = "+" if err_pct >= 0 else ""
-                    err_color = "#dc2626" if err_pct < 0 else "#166534"
-                    err_html = f'<div style="font-size:0.7rem; color:{err_color}; margin-top:2px;">오차율: {err_sign}{err_pct:.1f}%</div>'
-                sum_box_cols[sb_idx].markdown(f"""
-<div style="background:{sc_colors[ci]}; border-radius:8px; padding:10px 14px; text-align:center; border:2px solid {sc_borders[ci]};">
-<div style="font-size:0.8rem; color:{sc_text_colors[ci]}; font-weight:600;">{sn} 합계</div>
-<div style="font-size:1.3rem; font-weight:700; color:#1f2937;">{st_val:,}</div>
-{err_html}
-</div>""", unsafe_allow_html=True)
-                sb_idx += 1
-
-            display_df = result_df[["Year_Month"]].copy()
-            # 2026 실적 열
-            if has_base and sim_pred_year != latest_actual_year:
-                display_df[f"{latest_actual_year} 실적"] = result_df[f"{latest_actual_year} 실적"]
-            if has_actual_chart:
-                display_df[f"{sim_pred_year} 실적"] = result_df[f"{sim_pred_year} 실적"]
-            for sc_name in scenario_totals.keys():
-                temp_col_name = f"{sc_name}\n기온"
-                if temp_col_name in result_df.columns:
-                    display_df[temp_col_name] = result_df[temp_col_name]
-                display_df[sc_name] = result_df[sc_name]
-
-            # 합계 행
-            sum_row = {"Year_Month": "합계"}
+            # ── 월별 비교 데이터 구성 (기온 제외, 공급량만) ──
             actual_col_name = f"{latest_actual_year} 실적"
-            for c in display_df.columns:
-                if c == "Year_Month":
-                    continue
-                if '\n기온' in c:
-                    sum_row[c] = ""
-                elif c == actual_col_name and has_base:
-                    # 확인된 실적값 사용 (스프레드시트 부분합 방지)
-                    sum_row[c] = base_total
-                else:
-                    vals = pd.to_numeric(display_df[c], errors="coerce")
-                    sum_row[c] = vals.sum()
-            display_df = pd.concat([display_df, pd.DataFrame([sum_row])], ignore_index=True)
+            sim_supply_df = result_df[["Year_Month"]].copy()
+            sim_selected_cols = []
+            if has_base and sim_pred_year != latest_actual_year:
+                sim_supply_df[actual_col_name] = result_df[f"{latest_actual_year} 실적"]
+                sim_selected_cols.append(actual_col_name)
+            if has_actual_chart:
+                act_col = f"{sim_pred_year} 실적"
+                sim_supply_df[act_col] = result_df[act_col]
+                sim_selected_cols.append(act_col)
+            for sc_name in scenario_totals.keys():
+                sim_supply_df[sc_name] = result_df[sc_name]
+                sim_selected_cols.append(sc_name)
 
-            render_html_diff_table(display_df, "Year_Month",
-                                   target_col=f"{latest_actual_year} 실적" if has_base else None)
+            # ── 연도별 시나리오 합산 ──
+            st.markdown(f"**📊 연도별 시나리오 합산**")
+            use_mae_yearly = st.checkbox(
+                "📌 차이를 절대값(MAE)으로 표시 — 월별 오차를 먼저 절대값화한 뒤 연평균",
+                key=f"sim_yearly_mae_{prod}")
+
+            yearly_out = pd.DataFrame({"Year": [sim_pred_year]})
+            if has_base:
+                yearly_out[actual_col_name] = base_total  # 확인된 실적값
+
+            # 시나리오별 합계 + 차이/오차율
+            _target_label = f"{latest_actual_year} 실적"
+            for sc_name, sc_total in scenario_totals.items():
+                yearly_out[sc_name] = sc_total
+                if has_base and base_total > 0:
+                    if use_mae_yearly:
+                        # 월별 MAE / MAPE
+                        _act_monthly = sim_supply_df[actual_col_name].values.astype(float)
+                        _pred_monthly = sim_supply_df[sc_name].values.astype(float)
+                        _m_diff = np.abs(_pred_monthly - _act_monthly)
+                        with np.errstate(divide='ignore', invalid='ignore'):
+                            _m_pct = np.abs(np.where(_pred_monthly != 0,
+                                            (_act_monthly / _pred_monthly - 1) * 100, np.nan))
+                        yearly_out[f"{sc_name}\n{_target_label}대비MAE"] = np.nanmean(_m_diff)
+                        yearly_out[f"{sc_name}\n{_target_label}대비MAPE(%)"] = np.nanmean(_m_pct)
+                    else:
+                        diff_val = sc_total - base_total
+                        with np.errstate(divide='ignore', invalid='ignore'):
+                            err_pct = (base_total / sc_total - 1) * 100 if sc_total != 0 else np.nan
+                        yearly_out[f"{sc_name}\n{_target_label}대비차이"] = diff_val
+                        yearly_out[f"{sc_name}\n{_target_label}대비오차율(%)"] = err_pct
+
+            render_html_diff_table(yearly_out, "Year",
+                                   target_col=actual_col_name if has_base else None)
+
+            # ── 월별 시나리오 ──
+            st.markdown(f"**🗂️ 월별 시나리오**")
+            if has_base:
+                diff_df_sim = _build_diff_table(
+                    sim_supply_df, "Year_Month", actual_col_name,
+                    sim_selected_cols, target_label=f"{latest_actual_year} 실적")
+            else:
+                diff_df_sim = sim_supply_df.copy()
+            render_diff_table(diff_df_sim, "Year_Month",
+                              target_col=actual_col_name if has_base else None,
+                              key_prefix=f"sim_monthly_{prod}")
 
             # ── 다운로드 ──
-            csv_sim = display_df.to_csv(index=False).encode("utf-8-sig")
+            csv_sim = diff_df_sim.to_csv(index=False).encode("utf-8-sig")
             st.download_button(f"📥 {prod} 시뮬레이션 결과 다운로드", data=csv_sim,
                                file_name=f"시뮬레이션_{prod}_{sim_pred_year}.csv",
                                mime="text/csv", key=f"dl_sim_{prod}")
