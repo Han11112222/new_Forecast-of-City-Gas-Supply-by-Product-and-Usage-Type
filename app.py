@@ -271,17 +271,17 @@ def load_sheet4_plan_actuals():
         raw = pd.read_csv(StringIO(resp.text), header=None)
     except Exception as e:
         return None, f"Sheet 4 (사업계획 실적) 로드 실패: {e}"
-    # 스프레드시트 구조: row0=빈줄, row1=헤더(비고,상품,2026-01,...,2026-12,소계)
-    # row2=취사용, row3=개별난방용, ...
-    # 상품명은 column 1 (B열), 월별 값은 column 2~13 (D~O열 = 1~12월)
+    # 스프레드시트 구조 (CSV 열 인덱스):
+    # col0=빈열(A), col1=비고(B), col2=상품(C), col3~14=1~12월(D~O), col15=소계(P)
+    # 비고 열은 병합 셀이라 개별난방용 등 하위 행은 비어있음 → 상품명은 col2 사용
     result = {}  # {상품명: {월: 값}}
     for _, row in raw.iterrows():
-        prod_name = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
+        prod_name = str(row.iloc[2]).strip() if len(row) > 2 and pd.notna(row.iloc[2]) else ""
         if not prod_name or prod_name in ("상품", "소 계", "합 계", "소계", "합계"):
             continue
         monthly = {}
         for m in range(1, 13):
-            col_idx = m + 1  # column 2=1월, column 3=2월, ...
+            col_idx = m + 2  # column 3=1월(D), column 4=2월(E), ..., column 14=12월(O)
             if col_idx < len(row):
                 val = row.iloc[col_idx]
                 if pd.notna(val):
