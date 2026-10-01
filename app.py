@@ -1690,6 +1690,19 @@ def _compute_temp_scenarios(temp_monthly, all_years, pred_year):
             trend_temps[m] = np.nan
     scenarios["추세반영기온"] = trend_temps
 
+    # ── 6) 5년 평균: pred_year 직전 5개년 월별 평균 ──
+    #    3년 평균보다 긴 기간을 사용하여 기후 변동성을 더 넓게 반영.
+    #    동절기(11~3월) 기온이 3년 평균보다 소폭 높아질 수 있어 보수적 시나리오로 활용.
+    recent_5 = sorted([y for y in pool_years if y < pred_year])[-5:]
+    five_yr_temps = {}
+    for m in range(1, 13):
+        vals = [temp_pool[(y, m)] for y in recent_5 if (y, m) in temp_pool]
+        if vals:
+            five_yr_temps[m] = float(sum(vals) / len(vals))
+        else:
+            five_yr_temps[m] = np.nan
+    scenarios["5년 평균"] = five_yr_temps
+
     return scenarios
 
 
@@ -1699,7 +1712,7 @@ def render_simulation_tab(merged, temp_monthly, supply_df, available_products, y
     st.markdown("""
     <div class="info-box">
     <b>기온 시나리오별</b>로 예측 공급량을 비교 시뮬레이션합니다.<br>
-    5가지 기온 시나리오: <b>3년 평균</b> · <b>Max,min 제외</b> · <b>전년도 기온</b> · <b>이상기온 제외(IQR)</b> · <b>추세반영기온</b><br>
+    6가지 기온 시나리오: <b>3년 평균</b> · <b>Max,min 제외</b> · <b>전년도 기온</b> · <b>이상기온 제외(IQR)</b> · <b>추세반영기온</b> · <b>5년 평균</b><br>
     3가지 예측 모델: <b>Poly-3 단일</b> · <b>분리·3차식</b> · <b>분리·2차식</b>
     </div>
     """, unsafe_allow_html=True)
@@ -1728,9 +1741,9 @@ def render_simulation_tab(merged, temp_monthly, supply_df, available_products, y
     st.markdown('<div class="sub">🌡️ 기온 시나리오 선택</div>', unsafe_allow_html=True)
     sim_temp_scenarios = st.multiselect(
         "시나리오 선택",
-        options=["3년 평균", "Max,min제외", "전년도 기온", "이상기온제외", "추세반영기온"],
-        default=["3년 평균", "Max,min제외", "전년도 기온", "이상기온제외", "추세반영기온"],
-        key="sim_temp_scenarios_v2")
+        options=["3년 평균", "Max,min제외", "전년도 기온", "이상기온제외", "추세반영기온", "5년 평균"],
+        default=["3년 평균", "Max,min제외", "전년도 기온", "이상기온제외", "추세반영기온", "5년 평균"],
+        key="sim_temp_scenarios_v3")
 
     # ── 4. 예측 모델 선택 ──
     sim_model = st.selectbox(
@@ -1893,9 +1906,9 @@ def render_simulation_tab(merged, temp_monthly, supply_df, available_products, y
                 col_idx += 1
 
             # 시나리오 박스
-            sc_colors = ["#f0fdf4", "#fef3c7", "#fce7f3", "#ede9fe", "#e0f2fe"]
-            sc_borders = ["#22c55e", "#f59e0b", "#ec4899", "#8b5cf6", "#0ea5e9"]
-            sc_text_colors = ["#166534", "#92400e", "#9d174d", "#5b21b6", "#0c4a6e"]
+            sc_colors = ["#f0fdf4", "#fef3c7", "#fce7f3", "#ede9fe", "#e0f2fe", "#fef9c3"]
+            sc_borders = ["#22c55e", "#f59e0b", "#ec4899", "#8b5cf6", "#0ea5e9", "#ca8a04"]
+            sc_text_colors = ["#166534", "#92400e", "#9d174d", "#5b21b6", "#0c4a6e", "#713f12"]
             for i, (sc_name, total) in enumerate(scenario_totals.items()):
                 ci = i % len(sc_colors)
                 # 차이/비율 계산
@@ -1946,7 +1959,7 @@ def render_simulation_tab(merged, temp_monthly, supply_df, available_products, y
             sim_line_colors = {}
             sim_line_colors[f"{latest_actual_year} 실적"] = "#1e3a8a"
             sim_line_colors[f"{sim_pred_year} 실적"] = "#64748b"
-            palette = ["#22c55e", "#f59e0b", "#ec4899", "#8b5cf6", "#0ea5e9"]
+            palette = ["#22c55e", "#f59e0b", "#ec4899", "#8b5cf6", "#0ea5e9", "#ca8a04"]
             for i, sc_name in enumerate(scenario_totals.keys()):
                 sim_line_colors[sc_name] = palette[i % len(palette)]
 
