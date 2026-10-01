@@ -2476,13 +2476,8 @@ def main():
                     if key in actual_temp_lookup.index:
                         fut_df_vf.loc[idx, "예상기온"] = actual_temp_lookup.loc[key]
 
-            temp_pool = {}
-            for _, row in temp_monthly.iterrows():
-                temp_pool[(int(row["연"]), int(row["월"]))] = row["월평균기온"]
-
             rolling_year_map = {}
             actual_years_set = set(int(y) for y in temp_monthly["연"].unique())
-            all_pool_years = set(actual_years_set)
 
             actual_months_map = {}
             for pred_y in sorted(fut_df_vf["연"].unique()):
@@ -2490,41 +2485,21 @@ def main():
                 filled = fut_df_vf[(fut_df_vf["연"] == pred_y) & fut_df_vf["예상기온"].notna()]
                 actual_months_map[pred_y] = sorted(int(m) for m in filled["월"])
 
+            # ── 빈 월을 Simulation 탭과 동일한 로직(Y-1 대체 + 3년 평균)으로 채움 ──
             for pred_y in sorted(fut_df_vf["연"].unique()):
                 pred_y = int(pred_y)
                 missing_mask = (fut_df_vf["연"] == pred_y) & fut_df_vf["예상기온"].isna()
                 if not missing_mask.any():
-                    for _, row in fut_df_vf[fut_df_vf["연"] == pred_y].iterrows():
-                        ym = (pred_y, int(row["월"]))
-                        if ym not in temp_pool and pd.notna(row["예상기온"]):
-                            temp_pool[ym] = row["예상기온"]
-                    all_pool_years.add(pred_y)
                     rolling_year_map[pred_y] = []
                     continue
-
-                ideal = list(range(pred_y - N_roll, pred_y))
-                used = [y for y in ideal if y in all_pool_years]
-                if len(used) < N_roll:
-                    before = sorted([y for y in all_pool_years if y < pred_y])
-                    used = before[-N_roll:] if len(before) >= N_roll else (before if before else sorted(all_pool_years))
-                if not used:
-                    used = sorted(all_pool_years)
-                rolling_year_map[pred_y] = used
-
-                month_temps = {}
-                for m in range(1, 13):
-                    vals = [temp_pool[(y, m)] for y in used if (y, m) in temp_pool]
-                    if vals:
-                        month_temps[m] = sum(vals) / len(vals)
-
+                # Simulation 탭(_compute_temp_scenarios)과 동일: Y-1 대체 후 3년 평균
+                scenarios_for_y = _compute_temp_scenarios(temp_monthly, list(years_all), pred_y)
+                three_yr = scenarios_for_y.get("3년 평균", {})
                 fut_df_vf.loc[missing_mask, "예상기온"] = \
-                    fut_df_vf.loc[missing_mask, "월"].map(month_temps)
-
-                for _, row in fut_df_vf[fut_df_vf["연"] == pred_y].iterrows():
-                    ym = (pred_y, int(row["월"]))
-                    if ym not in temp_pool and pd.notna(row["예상기온"]):
-                        temp_pool[ym] = row["예상기온"]
-                all_pool_years.add(pred_y)
+                    fut_df_vf.loc[missing_mask, "월"].map(three_yr)
+                # 캡션용: 직전 3개년
+                avail = sorted(y for y in range(2020, pred_y))
+                rolling_year_map[pred_y] = avail[-3:] if len(avail) >= 3 else avail
 
             if fut_df_vf["예상기온"].isna().any():
                 st.warning("일부 월은 선택한 연도만으로는 예상기온을 정하지 못해, 전체 연도 평균으로 대신 채웠습니다.")
@@ -2617,7 +2592,7 @@ def main():
                     for y in roll_yrs:
                         yr_labels.append(f"{y}(추정)" if y not in actual_years_set else str(y))
                     cap_parts.append(f"{py}년→{','.join(yr_labels)}년 평균")
-            cap_method = "Y-1 기온 적용" if use_y1_temp else f"롤링 {N_roll}년 평균"
+            cap_method = "Y-1 기온 적용" if use_y1_temp else "Y-1 대체 + 3년 평균"
             st.caption(f"🌡️ 예상기온 산출 ({cap_method}): " + " | ".join(cap_parts))
 
             naive_label_pred = f"단순{len(temp_avg_years_vf)}년평균"
