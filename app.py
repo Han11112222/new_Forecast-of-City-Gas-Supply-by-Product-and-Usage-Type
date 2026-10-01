@@ -1598,20 +1598,25 @@ def render_sales_vs_supply(supply_df, sales_df):
 # Tab 6: 개별난방용 Simulation
 # ══════════════════════════════════════════════
 
-def _compute_temp_scenarios(temp_monthly, all_years, pred_year):
+def _compute_temp_scenarios(temp_monthly, all_years, pred_year, prev_3yr_estimates=None):
     """
-    기온 시나리오 4가지를 계산한다.
+    기온 시나리오 5가지를 계산한다.
     공급량 예측 검증 탭과 동일한 롤링 평균 + 누적 추정 로직 사용.
 
     all_years: 전체 실적 연도 리스트
     pred_year: 예측 대상 연도
+    prev_3yr_estimates: 이전 pred_year들의 3년평균 추정 결과 dict
+                        {연도: {월: 기온}} — 롤링 3년평균 계산에 사용
 
     반환: dict {시나리오명: {월: 기온}}
-    1) 3년 평균: pred_year 직전 3개년 월별 평균 (누적 추정 포함)
+    1) 3년 평균: pred_year 직전 3개년 월별 평균 (롤링 — 이전 추정값 포함)
     2) Max,min제외: 완성된 데이터에서 월별 최대·최소 제거 후 평균
     3) 전년도 기온: pred_year - 1 연도의 실제/추정 기온
     4) 이상기온 제외: 완성된 데이터에서 IQR 방식 이상치 제거 후 평균
+    5) 추세반영기온: max/min 제거 + 선형추세 외삽
     """
+    if prev_3yr_estimates is None:
+        prev_3yr_estimates = {}
     from datetime import date as _date
     _today = _date.today()
     current_year = _today.year
@@ -1664,13 +1669,21 @@ def _compute_temp_scenarios(temp_monthly, all_years, pred_year):
     scenarios = {}
     prev_year = pred_year - 1
 
-    # 3년 평균용: pred_year 직전 3개년 (pool 데이터 사용)
-    recent_3 = sorted([y for y in pool_years if y < pred_year])[-3:]
+    # 3년 평균용: pred_year 직전 3개년 (롤링 — 이전 추정값 우선 사용)
+    all_candidate_years = sorted([y for y in pool_years if y < pred_year])
+    recent_3 = all_candidate_years[-3:] if len(all_candidate_years) >= 3 else all_candidate_years
 
-    # ── 1) 3년 평균 ──
+    # ── 1) 3년 평균 (롤링) ──
+    # 이전에 계산된 3년평균 추정값이 있으면 해당 연도는 추정값 사용
     three_yr_temps = {}
     for m in range(1, 13):
-        vals = [temp_pool[(y, m)] for y in recent_3 if (y, m) in temp_pool]
+        vals = []
+        for y in recent_3:
+            if y in prev_3yr_estimates and m in prev_3yr_estimates[y]:
+                # 이전 pred_year의 3년평균 추정값 사용 (롤링)
+                vals.append(prev_3yr_estimates[y][m])
+            elif (y, m) in temp_pool:
+                vals.append(temp_pool[(y, m)])
         if vals:
             three_yr_temps[m] = float(sum(vals) / len(vals))
         else:
@@ -1872,12 +1885,17 @@ def render_simulation_tab(merged, temp_monthly, supply_df, available_products, y
 
             # ── 연도별 합산 비교표용 데이터 수집 ──
             yearly_summary_rows = []
+            rolling_3yr_estimates = {}  # 롤링 3년평균용 누적 추정값
 
             for sim_pred_year in sorted(sim_pred_years):
                 st.markdown(f"#### 📅 {sim_pred_year}년 예측")
 
-                # ── 기온 시나리오 계산 (연도별) ──
-                all_scenarios = _compute_temp_scenarios(temp_monthly, years_all, sim_pred_year)
+                # ── 기온 시나리오 계산 (연도별, 롤링 3년평균) ──
+                all_scenarios = _compute_temp_scenarios(temp_monthly, years_all, sim_pred_year,
+                                                        prev_3yr_estimates=rolling_3yr_estimates)
+                # 이번 연도의 3년평균 결과를 다음 연도 계산에 사용하도록 저장
+                if "3년 평균" in all_scenarios:
+                    rolling_3yr_estimates[sim_pred_year] = all_scenarios["3년 평균"]
                 selected_scenarios = {}
                 for ui_name in sim_temp_scenarios:
                     if ui_name in all_scenarios:
@@ -2533,10 +2551,15 @@ def main():
             # ── 빈 월을 선택된 첫 번째 시나리오 기온으로 채움 ──
             first_scenario_name = vf_temp_scenarios[0]
             scenario_temps_map = {}  # {pred_y: {시나리오명: {월: 기온}}}
+            rolling_3yr_estimates_vf = {}  # 롤링 3년평균용 누적 추정값
             for pred_y in sorted(fut_df_vf["연"].unique()):
                 pred_y = int(pred_y)
                 missing_mask = (fut_df_vf["연"] == pred_y) & fut_df_vf["예상기온"].isna()
-                scenarios_for_y = _compute_temp_scenarios(temp_monthly, list(years_all), pred_y)
+                scenarios_for_y = _compute_temp_scenarios(temp_monthly, list(years_all), pred_y,
+                                                          prev_3yr_estimates=rolling_3yr_estimates_vf)
+                # 이번 연도의 3년평균 결과를 다음 연도 계산에 사용하도록 저장
+                if "3년 평균" in scenarios_for_y:
+                    rolling_3yr_estimates_vf[pred_y] = scenarios_for_y["3년 평균"]
                 scenario_temps_map[pred_y] = {
                     name: scenarios_for_y[name]
                     for name in vf_temp_scenarios if name in scenarios_for_y
