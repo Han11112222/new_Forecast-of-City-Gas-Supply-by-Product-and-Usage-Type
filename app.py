@@ -23,10 +23,12 @@ st.set_page_config(page_title="도시가스 공급량·판매량 예측", page_i
 SHEET1_ID = "1gIhArPlLBJ9fwlaqXtZWxiKlSK9hbRuz6HcDw_Yf7Is"   # 상품별 공급량 실적
 SHEET2_ID = "13HrIz6OytYDykXeXzXJ02I6XbaKin1YaKBoO2kBd6Bs"   # 일별 기온/공급량
 SHEET3_ID = "1-8RIPIkjnVXxoh5QJs6598nnHkWOGmrO655jr3b3g04"   # 상품별 판매량 실적
+SHEET4_ID = "1a_3OgmZxJvKw2GxsH_QIXdGNqWcwgpZPb2sKUQAI0vE"   # 사업계획 실적 추정(2026년)
 
 SHEET1_URL = f"https://docs.google.com/spreadsheets/d/{SHEET1_ID}/export?format=csv&gid=0"
 SHEET2_URL = f"https://docs.google.com/spreadsheets/d/{SHEET2_ID}/export?format=csv&gid=0"
 SHEET3_URL = f"https://docs.google.com/spreadsheets/d/{SHEET3_ID}/export?format=csv&gid=0"
+SHEET4_URL = f"https://docs.google.com/spreadsheets/d/{SHEET4_ID}/export?format=csv&gid=0"
 
 # ── 상품 목록 (Sheet 1 기준) ──
 HOUSING_PRODUCTS = ["취사용", "개별난방용", "중앙난방용", "자가열전용"]
@@ -258,6 +260,38 @@ def load_sheet3_sales():
     raw["연"] = raw["연"].astype(int)
     raw["월"] = raw["월"].astype(int)
     return raw, None
+
+
+@st.cache_data(ttl=1800)
+def load_sheet4_plan_actuals():
+    """사업계획 실적 추정(2026년) 스프레드시트에서 상품별 월별 실적 로드"""
+    try:
+        resp = requests.get(SHEET4_URL, timeout=30)
+        resp.raise_for_status()
+        raw = pd.read_csv(StringIO(resp.text), header=None)
+    except Exception as e:
+        return None, f"Sheet 4 (사업계획 실적) 로드 실패: {e}"
+    # 스프레드시트 구조: row0=빈줄, row1=헤더(비고,상품,2026-01,...,2026-12,소계)
+    # row2=취사용, row3=개별난방용, ...
+    # 상품명은 column 1 (B열), 월별 값은 column 2~13 (D~O열 = 1~12월)
+    result = {}  # {상품명: {월: 값}}
+    for _, row in raw.iterrows():
+        prod_name = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
+        if not prod_name or prod_name in ("상품", "소 계", "합 계", "소계", "합계"):
+            continue
+        monthly = {}
+        for m in range(1, 13):
+            col_idx = m + 1  # column 2=1월, column 3=2월, ...
+            if col_idx < len(row):
+                val = row.iloc[col_idx]
+                if pd.notna(val):
+                    try:
+                        monthly[m] = float(str(val).replace(",", ""))
+                    except ValueError:
+                        pass
+        if monthly:
+            result[prod_name] = monthly
+    return result, None
 
 
 def get_monthly_avg_temp(temp_daily: pd.DataFrame) -> pd.DataFrame:
@@ -1775,32 +1809,19 @@ def render_simulation_tab(merged, temp_monthly, supply_df, available_products, y
 
     x_train_sim = train_data_sim["월평균기온"].values.astype(float)
 
-    # ── 2026 실적 가져오기 (비교 기준) ──
+    # ── 2026 실적 가져오기 (사업계획 실적 추정 스프레드시트에서) ──
     latest_actual_year = max(years_all)
-    # 개별난방용 2026 실적 (확인된 값) — 스프레드시트 부분합 대신 사용
-    _KNOWN_ACTUALS = {2026: {"개별난방용": 24_440_815_554}}
+    plan_actuals, plan_err = load_sheet4_plan_actuals()
     base_actual_totals = {}  # {상품: 연간합계}
     base_actual_monthly = {}  # {상품: {월: 값}}
     for prod in sim_products:
-        # 확인된 실적값이 있으면 우선 사용 (스프레드시트 부분합 문제 방지)
-        if latest_actual_year in _KNOWN_ACTUALS and prod in _KNOWN_ACTUALS[latest_actual_year]:
-            base_actual_totals[prod] = _KNOWN_ACTUALS[latest_actual_year][prod]
-            # 월별 데이터도 가져오기 (그래프용)
-            if prod in supply_df.columns:
-                _sup_tmp = supply_df[[prod]].copy()
-                _sup_tmp["연"] = _sup_tmp.index.year
-                _sup_tmp["월"] = _sup_tmp.index.month
-                _sup_year = _sup_tmp[_sup_tmp["연"] == latest_actual_year]
-                if not _sup_year.empty:
-                    monthly = {}
-                    for m in range(1, 13):
-                        row = _sup_year[_sup_year["월"] == m]
-                        if not row.empty and row[prod].values[0] > 0:
-                            monthly[m] = float(row[prod].values[0])
-                    if monthly:
-                        base_actual_monthly[prod] = monthly
+        # 사업계획 실적 추정 스프레드시트에서 월별 데이터 가져오기
+        if plan_actuals and prod in plan_actuals:
+            monthly = plan_actuals[prod]
+            base_actual_monthly[prod] = monthly
+            base_actual_totals[prod] = sum(monthly.values())
             continue
-        # supply_df에서 가져오기
+        # 폴백: supply_df에서 가져오기
         if prod in supply_df.columns:
             _sup_tmp = supply_df[[prod]].copy()
             _sup_tmp["연"] = _sup_tmp.index.year
