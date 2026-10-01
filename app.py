@@ -1674,6 +1674,22 @@ def _compute_temp_scenarios(temp_monthly, all_years, pred_year):
             iqr_temps[m] = np.nan
     scenarios["이상기온제외"] = iqr_temps
 
+    # ── 5) 추세반영기온: 2020~(pred_year-1) 월별 선형추세를 pred_year로 외삽 ──
+    #    (2026년 미완료 월은 위에서 Y-1(2025) 동월 기온으로 채워진 값 사용)
+    trend_temps = {}
+    for m in range(1, 13):
+        pts = [(y, temp_pool[(y, m)]) for y in range(2020, pred_year) if (y, m) in temp_pool]
+        if len(pts) >= 3:
+            xs = np.array([p[0] for p in pts], dtype=float)
+            ys = np.array([p[1] for p in pts], dtype=float)
+            slope, intercept = np.polyfit(xs, ys, 1)
+            trend_temps[m] = float(slope * pred_year + intercept)
+        elif pts:
+            trend_temps[m] = float(np.mean([p[1] for p in pts]))
+        else:
+            trend_temps[m] = np.nan
+    scenarios["추세반영기온"] = trend_temps
+
     return scenarios
 
 
@@ -1683,7 +1699,7 @@ def render_simulation_tab(merged, temp_monthly, supply_df, available_products, y
     st.markdown("""
     <div class="info-box">
     <b>기온 시나리오별</b>로 예측 공급량을 비교 시뮬레이션합니다.<br>
-    4가지 기온 시나리오: <b>3년 평균</b> · <b>Max,min 제외</b> · <b>전년도 기온</b> · <b>이상기온 제외(IQR)</b><br>
+    5가지 기온 시나리오: <b>3년 평균</b> · <b>Max,min 제외</b> · <b>전년도 기온</b> · <b>이상기온 제외(IQR)</b> · <b>추세반영기온</b><br>
     3가지 예측 모델: <b>Poly-3 단일</b> · <b>분리·3차식</b> · <b>분리·2차식</b>
     </div>
     """, unsafe_allow_html=True)
@@ -1712,8 +1728,8 @@ def render_simulation_tab(merged, temp_monthly, supply_df, available_products, y
     st.markdown('<div class="sub">🌡️ 기온 시나리오 선택</div>', unsafe_allow_html=True)
     sim_temp_scenarios = st.multiselect(
         "시나리오 선택",
-        options=["3년 평균", "Max,min제외", "전년도 기온", "이상기온제외"],
-        default=["3년 평균", "Max,min제외", "전년도 기온", "이상기온제외"],
+        options=["3년 평균", "Max,min제외", "전년도 기온", "이상기온제외", "추세반영기온"],
+        default=["3년 평균", "Max,min제외", "전년도 기온", "이상기온제외", "추세반영기온"],
         key="sim_temp_scenarios")
 
     # ── 4. 예측 모델 선택 ──
@@ -1877,7 +1893,7 @@ def render_simulation_tab(merged, temp_monthly, supply_df, available_products, y
                 col_idx += 1
 
             # 시나리오 박스
-            sc_colors = ["#f0fdf4", "#fef3c7", "#fce7f3", "#ede9fe"]
+            sc_colors = ["#f0fdf4", "#fef3c7", "#fce7f3", "#ede9fe", "#e0f2fe"]
             sc_borders = ["#22c55e", "#f59e0b", "#ec4899", "#8b5cf6"]
             sc_text_colors = ["#166534", "#92400e", "#9d174d", "#5b21b6"]
             for i, (sc_name, total) in enumerate(scenario_totals.items()):
@@ -1930,7 +1946,7 @@ def render_simulation_tab(merged, temp_monthly, supply_df, available_products, y
             sim_line_colors = {}
             sim_line_colors[f"{latest_actual_year} 실적"] = "#1e3a8a"
             sim_line_colors[f"{sim_pred_year} 실적"] = "#64748b"
-            palette = ["#22c55e", "#f59e0b", "#ec4899", "#8b5cf6"]
+            palette = ["#22c55e", "#f59e0b", "#ec4899", "#8b5cf6", "#0ea5e9"]
             for i, sc_name in enumerate(scenario_totals.keys()):
                 sim_line_colors[sc_name] = palette[i % len(palette)]
 
@@ -1954,67 +1970,31 @@ def render_simulation_tab(merged, temp_monthly, supply_df, available_products, y
                 margin=dict(t=50, b=70), height=450)
             st.plotly_chart(fig_sim, use_container_width=True, config=dict(displaylogo=False))
 
-            # ── 월별 비교 데이터 구성 (기온 제외, 공급량만) ──
+            # ── 데이터 준비 ──
             actual_col_name = f"{latest_actual_year} 실적"
-            sim_supply_df = result_df[["Year_Month"]].copy()
-            sim_selected_cols = []
-            if has_base and sim_pred_year != latest_actual_year:
-                sim_supply_df[actual_col_name] = result_df[f"{latest_actual_year} 실적"]
-                sim_selected_cols.append(actual_col_name)
-            if has_actual_chart:
-                act_col = f"{sim_pred_year} 실적"
-                sim_supply_df[act_col] = result_df[act_col]
-                sim_selected_cols.append(act_col)
-            for sc_name in scenario_totals.keys():
-                sim_supply_df[sc_name] = result_df[sc_name]
-                sim_selected_cols.append(sc_name)
 
-            # ── 연도별 시나리오 합산 ──
-            st.markdown(f"**📊 연도별 시나리오 합산**")
-            use_mae_yearly = st.checkbox(
-                "📌 차이를 절대값(MAE)으로 표시 — 월별 오차를 먼저 절대값화한 뒤 연평균",
-                key=f"sim_yearly_mae_{prod}")
-
+            # ── 연도별 시나리오 합산 (시나리오별 예상 실적만) ──
+            st.markdown("**📊 연도별 시나리오 합산**")
             yearly_out = pd.DataFrame({"Year": [sim_pred_year]})
             if has_base:
-                yearly_out[actual_col_name] = base_total  # 확인된 실적값
-
-            # 시나리오별 합계 + 차이/오차율
-            _target_label = f"{latest_actual_year} 실적"
+                yearly_out[actual_col_name] = base_total
             for sc_name, sc_total in scenario_totals.items():
                 yearly_out[sc_name] = sc_total
-                if has_base and base_total > 0:
-                    if use_mae_yearly:
-                        # 월별 MAE / MAPE
-                        _act_monthly = sim_supply_df[actual_col_name].values.astype(float)
-                        _pred_monthly = sim_supply_df[sc_name].values.astype(float)
-                        _m_diff = np.abs(_pred_monthly - _act_monthly)
-                        with np.errstate(divide='ignore', invalid='ignore'):
-                            _m_pct = np.abs(np.where(_pred_monthly != 0,
-                                            (_act_monthly / _pred_monthly - 1) * 100, np.nan))
-                        yearly_out[f"{sc_name}\n{_target_label}대비MAE"] = np.nanmean(_m_diff)
-                        yearly_out[f"{sc_name}\n{_target_label}대비MAPE(%)"] = np.nanmean(_m_pct)
-                    else:
-                        diff_val = sc_total - base_total
-                        with np.errstate(divide='ignore', invalid='ignore'):
-                            err_pct = (base_total / sc_total - 1) * 100 if sc_total != 0 else np.nan
-                        yearly_out[f"{sc_name}\n{_target_label}대비차이"] = diff_val
-                        yearly_out[f"{sc_name}\n{_target_label}대비오차율(%)"] = err_pct
-
             render_html_diff_table(yearly_out, "Year",
                                    target_col=actual_col_name if has_base else None)
 
-            # ── 월별 시나리오 ──
-            st.markdown(f"**🗂️ 월별 시나리오**")
-            if has_base:
-                diff_df_sim = _build_diff_table(
-                    sim_supply_df, "Year_Month", actual_col_name,
-                    sim_selected_cols, target_label=f"{latest_actual_year} 실적")
-            else:
-                diff_df_sim = sim_supply_df.copy()
-            render_diff_table(diff_df_sim, "Year_Month",
-                              target_col=actual_col_name if has_base else None,
-                              key_prefix=f"sim_monthly_{prod}")
+            # ── 월별 시나리오 (시나리오별 예상 실적만) ──
+            st.markdown("**🗂️ 월별 시나리오**")
+            diff_df_sim = result_df[["Year_Month"]].copy()
+            if has_base and sim_pred_year != latest_actual_year:
+                diff_df_sim[actual_col_name] = result_df.get(f"{latest_actual_year} 실적", np.nan)
+            if has_actual_chart:
+                diff_df_sim[f"{sim_pred_year} 실적"] = result_df[f"{sim_pred_year} 실적"]
+            for sc_name in scenario_totals.keys():
+                diff_df_sim[sc_name] = result_df[sc_name]
+
+            render_html_diff_table(diff_df_sim, "Year_Month",
+                                   target_col=actual_col_name if has_base else None)
 
             # ── 다운로드 ──
             csv_sim = diff_df_sim.to_csv(index=False).encode("utf-8-sig")
