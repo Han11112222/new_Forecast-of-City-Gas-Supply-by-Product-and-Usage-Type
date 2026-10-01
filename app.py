@@ -1748,7 +1748,7 @@ def render_simulation_tab(merged, temp_monthly, supply_df, available_products, y
         "예측 대상 연도",
         options=pred_year_options,
         default=[max_y + 1] if max_y + 1 in pred_year_options else pred_year_options[:1],
-        key="sim_pred_years_v1")
+        key="sim_pred_years_v2")
 
     # ── 3. 기온 시나리오 선택 (간단 체크박스) ──
     st.markdown('<div class="sub">🌡️ 기온 시나리오 선택</div>', unsafe_allow_html=True)
