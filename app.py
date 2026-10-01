@@ -1730,7 +1730,7 @@ def render_simulation_tab(merged, temp_monthly, supply_df, available_products, y
         "시나리오 선택",
         options=["3년 평균", "Max,min제외", "전년도 기온", "이상기온제외", "추세반영기온"],
         default=["3년 평균", "Max,min제외", "전년도 기온", "이상기온제외", "추세반영기온"],
-        key="sim_temp_scenarios")
+        key="sim_temp_scenarios_v2")
 
     # ── 4. 예측 모델 선택 ──
     sim_model = st.selectbox(
@@ -1894,8 +1894,8 @@ def render_simulation_tab(merged, temp_monthly, supply_df, available_products, y
 
             # 시나리오 박스
             sc_colors = ["#f0fdf4", "#fef3c7", "#fce7f3", "#ede9fe", "#e0f2fe"]
-            sc_borders = ["#22c55e", "#f59e0b", "#ec4899", "#8b5cf6"]
-            sc_text_colors = ["#166534", "#92400e", "#9d174d", "#5b21b6"]
+            sc_borders = ["#22c55e", "#f59e0b", "#ec4899", "#8b5cf6", "#0ea5e9"]
+            sc_text_colors = ["#166534", "#92400e", "#9d174d", "#5b21b6", "#0c4a6e"]
             for i, (sc_name, total) in enumerate(scenario_totals.items()):
                 ci = i % len(sc_colors)
                 # 차이/비율 계산
