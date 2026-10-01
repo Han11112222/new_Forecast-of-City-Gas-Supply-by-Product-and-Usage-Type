@@ -2449,19 +2449,12 @@ def main():
         </div>
         """, unsafe_allow_html=True)
 
-        _max_temp_year_vf = max(years_all)
-        default_temp_years_vf = sorted([y for y in (_max_temp_year_vf, _max_temp_year_vf - 1, _max_temp_year_vf - 2)
-                                         if y in years_all])
-        if not default_temp_years_vf:
-            default_temp_years_vf = years_all[-3:] if len(years_all) >= 3 else years_all
-
-        temp_avg_years_vf = st.multiselect(
-            "🌡️ 과거기온 선택 (예상기온 산출 기준 연도 · 기본값: 최근 3년 평균)",
-            options=years_all,
-            default=default_temp_years_vf,
-            key="temp_avg_years_vf")
-        st.caption("👆 미래(예측 기간)의 '예상기온'을 계산할 때 평균낼 연도. "
-                   "학습 연도와 별개로 원하는 연도만 골라 월별 평균기온을 낼 수 있습니다.")
+        st.markdown('<div class="sub">🌡️ 기온 시나리오 선택</div>', unsafe_allow_html=True)
+        vf_temp_scenarios = st.multiselect(
+            "시나리오 선택",
+            options=["3년 평균", "Max,min제외", "전년도 기온", "이상기온제외", "추세반영기온"],
+            default=["3년 평균", "Max,min제외", "전년도 기온", "이상기온제외", "추세반영기온"],
+            key="vf_temp_scenarios_v1")
 
         st.markdown('<div class="sub">📅 예측 기간</div>', unsafe_allow_html=True)
         pc1_vf, pc2_vf, pc3_vf, pc4_vf = st.columns(4)
@@ -2481,7 +2474,7 @@ def main():
             st.caption("👆 종료 연도에 대해 직전연도(Y-1)의 완료된 월은 해당 기온을, "
                        "미완료 월(현재 월 포함)은 Y-2 기온을 적용하여 해당 연도만 예측합니다.")
 
-        _pred_params = (tuple(sorted(temp_avg_years_vf)),
+        _pred_params = (tuple(sorted(vf_temp_scenarios)),
                         pred_start_y_vf, pred_start_m_vf,
                         pred_end_y_vf, pred_end_m_vf,
                         use_y1_temp)
@@ -2497,19 +2490,14 @@ def main():
                 st.warning("예측할 상품을 선택해주세요 (상단 '검증 상품 선택')."); st.stop()
             if not vf_train_years:
                 st.warning("학습 연도를 선택해주세요."); st.stop()
-            if not temp_avg_years_vf:
-                st.warning("과거기온(예상기온 산출 기준) 연도를 선택해주세요."); st.stop()
+            if not vf_temp_scenarios:
+                st.warning("기온 시나리오를 선택해주세요."); st.stop()
 
             train_data_pred = merged[merged["연"].isin(vf_train_years)]
             if len(train_data_pred) < 12:
                 st.error("학습 데이터가 12건 미만입니다. 학습 연도를 추가해주세요."); st.stop()
 
-            N_roll = len(temp_avg_years_vf)
             all_temp_years = sorted(merged["연"].unique())
-
-            temp_basis_pred = merged[merged["연"].isin(temp_avg_years_vf)]
-            if temp_basis_pred.empty:
-                st.error("과거기온 연도에 해당하는 데이터가 없습니다."); st.stop()
 
             x_train_pred = train_data_pred["월평균기온"].values.astype(float)
 
@@ -2534,7 +2522,6 @@ def main():
                     if key in actual_temp_lookup.index:
                         fut_df_vf.loc[idx, "예상기온"] = actual_temp_lookup.loc[key]
 
-            rolling_year_map = {}
             actual_years_set = set(int(y) for y in temp_monthly["연"].unique())
 
             actual_months_map = {}
@@ -2543,21 +2530,23 @@ def main():
                 filled = fut_df_vf[(fut_df_vf["연"] == pred_y) & fut_df_vf["예상기온"].notna()]
                 actual_months_map[pred_y] = sorted(int(m) for m in filled["월"])
 
-            # ── 빈 월을 Simulation 탭과 동일한 로직(Y-1 대체 + 3년 평균)으로 채움 ──
+            # ── 빈 월을 선택된 첫 번째 시나리오 기온으로 채움 ──
+            first_scenario_name = vf_temp_scenarios[0]
+            scenario_temps_map = {}  # {pred_y: {시나리오명: {월: 기온}}}
             for pred_y in sorted(fut_df_vf["연"].unique()):
                 pred_y = int(pred_y)
                 missing_mask = (fut_df_vf["연"] == pred_y) & fut_df_vf["예상기온"].isna()
-                if not missing_mask.any():
-                    rolling_year_map[pred_y] = []
-                    continue
-                # Simulation 탭(_compute_temp_scenarios)과 동일: Y-1 대체 후 3년 평균
                 scenarios_for_y = _compute_temp_scenarios(temp_monthly, list(years_all), pred_y)
-                three_yr = scenarios_for_y.get("3년 평균", {})
+                scenario_temps_map[pred_y] = {
+                    name: scenarios_for_y[name]
+                    for name in vf_temp_scenarios if name in scenarios_for_y
+                }
+                if not missing_mask.any():
+                    continue
+                # 첫 번째 선택 시나리오의 기온으로 빈 월 채움
+                fill_temps = scenarios_for_y.get(first_scenario_name, {})
                 fut_df_vf.loc[missing_mask, "예상기온"] = \
-                    fut_df_vf.loc[missing_mask, "월"].map(three_yr)
-                # 캡션용: 직전 3개년
-                avail = sorted(y for y in range(2020, pred_y))
-                rolling_year_map[pred_y] = avail[-3:] if len(avail) >= 3 else avail
+                    fut_df_vf.loc[missing_mask, "월"].map(fill_temps)
 
             if fut_df_vf["예상기온"].isna().any():
                 st.warning("일부 월은 선택한 연도만으로는 예상기온을 정하지 못해, 전체 연도 평균으로 대신 채웠습니다.")
@@ -2634,26 +2623,19 @@ def main():
                 total_months = len(fut_df_vf[fut_df_vf["연"] == py])
                 actual_ms = actual_months_map.get(py, [])
                 n_actual = len(actual_ms)
-                roll_yrs = rolling_year_map.get(py, [])
                 if n_actual == total_months:
                     cap_parts.append(f"{py}년: 실측기온")
-                elif n_actual > 0 and roll_yrs:
+                elif n_actual > 0:
                     max_actual_m = max(actual_ms)
-                    yr_labels = []
-                    for y in roll_yrs:
-                        yr_labels.append(f"{y}(추정)" if y not in actual_years_set else str(y))
                     cap_parts.append(
                         f"{py}년: 1~{max_actual_m}월 실측, "
-                        f"{max_actual_m+1}~12월 {','.join(yr_labels)}년 평균")
-                elif roll_yrs:
-                    yr_labels = []
-                    for y in roll_yrs:
-                        yr_labels.append(f"{y}(추정)" if y not in actual_years_set else str(y))
-                    cap_parts.append(f"{py}년→{','.join(yr_labels)}년 평균")
-            cap_method = "Y-1 기온 적용" if use_y1_temp else "Y-1 대체 + 3년 평균"
+                        f"{max_actual_m+1}~12월 {first_scenario_name}")
+                else:
+                    cap_parts.append(f"{py}년→{first_scenario_name}")
+            cap_method = "Y-1 기온 적용" if use_y1_temp else first_scenario_name
             st.caption(f"🌡️ 예상기온 산출 ({cap_method}): " + " | ".join(cap_parts))
 
-            naive_label_pred = f"단순{len(temp_avg_years_vf)}년평균"
+            naive_label_pred = "단순평균"
 
             fut_df_vf["Year_Month"] = fut_df_vf.apply(
                 lambda r: f"{int(r['연'])}-{int(r['월']):02d}", axis=1)
@@ -2682,13 +2664,12 @@ def main():
                     if has_p3 else np.full(len(x_fut_normal), np.nan)
 
                 y_p4 = np.full(len(fut_df_vf), np.nan)
+                _basis = merged[merged["연"].isin(vf_train_years)]
+                _monthly_avg = _basis.groupby("월")[prod].mean()
                 for _py in sorted(fut_df_vf["연"].unique()):
                     _py = int(_py)
-                    _used = rolling_year_map.get(_py, list(all_temp_years))
-                    _basis = merged[merged["연"].isin(_used)]
-                    _monthly = _basis.groupby("월")[prod].mean()
                     _mask = (fut_df_vf["연"] == _py)
-                    y_p4[_mask.values] = fut_df_vf.loc[_mask, "월"].map(_monthly).values
+                    y_p4[_mask.values] = fut_df_vf.loc[_mask, "월"].map(_monthly_avg).values
 
                 pred_comp = fut_df_vf[["연", "월", "Year_Month", "예상기온"]].copy()
                 pred_comp["Poly-3 단일"] = y_p1
