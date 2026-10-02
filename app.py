@@ -2915,36 +2915,69 @@ def main():
                             sc_yearly_totals[y_val] = {}
                         sc_yearly_totals[y_val][sname] = int(s_val)
 
+                # (1) Normal/Best/Conservative 비교 박스 — 첫 번째 예측연도만
                 sc_box_bg = {"Normal": "#f1f5f9", "Best": "#dbeafe", "Conservative": "#fef3c7"}
                 sc_box_bd = {"Normal": "#94a3b8", "Best": "#3b82f6", "Conservative": "#f59e0b"}
                 sc_box_tx = {"Normal": "#334155", "Best": "#1e40af", "Conservative": "#92400e"}
 
-                for y_val in sorted(sc_yearly_totals.keys()):
-                    st.markdown(f"**📊 {int(y_val)}년 시나리오별 연간 총량 (Normal 대비)**")
-                    sc_box_cols = st.columns(len(scenarios_vf))
-                    normal_total = sc_yearly_totals[y_val].get("Normal", 0)
-                    for i, sname in enumerate(scenarios_vf):
-                        total_val = sc_yearly_totals[y_val].get(sname, 0)
-                        bg = sc_box_bg.get(sname, "#f1f5f9")
-                        bd = sc_box_bd.get(sname, "#94a3b8")
-                        tx = sc_box_tx.get(sname, "#334155")
-                        diff_html = ""
-                        if sname != "Normal" and normal_total > 0:
-                            diff_val = total_val - normal_total
-                            ratio_val = (total_val / normal_total - 1) * 100
-                            diff_sign = "+" if diff_val >= 0 else ""
-                            ratio_sign = "+" if ratio_val >= 0 else ""
-                            diff_color = "#dc2626" if diff_val < 0 else "#166534"
-                            diff_html = (f'<div style="font-size:0.75rem; color:{diff_color}; margin-top:4px;">'
-                                         f'차이: {diff_sign}{diff_val:,.0f}<br>'
-                                         f'비율: {ratio_sign}{ratio_val:.1f}%</div>')
-                        sc_box_cols[i].markdown(f"""
+                first_year = min(sc_yearly_totals.keys())
+                st.markdown(f"**📊 {int(first_year)}년 시나리오별 연간 총량 (Normal 대비)**")
+                sc_box_cols = st.columns(len(scenarios_vf))
+                normal_total_first = sc_yearly_totals[first_year].get("Normal", 0)
+                for i, sname in enumerate(scenarios_vf):
+                    total_val = sc_yearly_totals[first_year].get(sname, 0)
+                    bg = sc_box_bg.get(sname, "#f1f5f9")
+                    bd = sc_box_bd.get(sname, "#94a3b8")
+                    tx = sc_box_tx.get(sname, "#334155")
+                    diff_html = ""
+                    if sname != "Normal" and normal_total_first > 0:
+                        diff_val = total_val - normal_total_first
+                        ratio_val = (total_val / normal_total_first - 1) * 100
+                        diff_sign = "+" if diff_val >= 0 else ""
+                        ratio_sign = "+" if ratio_val >= 0 else ""
+                        diff_color = "#dc2626" if diff_val < 0 else "#166534"
+                        diff_html = (f'<div style="font-size:0.75rem; color:{diff_color}; margin-top:4px;">'
+                                     f'차이: {diff_sign}{diff_val:,.0f}<br>'
+                                     f'비율: {ratio_sign}{ratio_val:.1f}%</div>')
+                    sc_box_cols[i].markdown(f"""
 <div style="background:{bg}; border-radius:8px; padding:12px 16px; text-align:center; border:2px solid {bd};">
 <div style="font-size:0.85rem; color:{tx}; font-weight:600;">{sname}</div>
 <div style="font-size:1.5rem; font-weight:700; color:#1f2937;">{total_val:,}</div>
 {diff_html}
 </div>""", unsafe_allow_html=True)
-                    st.caption("※ Normal 대비 차이·비율 표시")
+                st.caption("※ Normal 대비 차이·비율 표시")
+
+                # (2) 연도별 총합 박스 (Y-1 대비 차이·비율)
+                sorted_sc_years = sorted(sc_yearly_totals.keys())
+                if len(sorted_sc_years) > 0:
+                    st.markdown("**📊 연도별 총합 (Normal 기준, Y-1 대비)**")
+                    yr_box_cols = st.columns(len(sorted_sc_years))
+                    yr_bg_list = ["#f1f5f9", "#e2e8f0", "#dbeafe", "#e0e7ff", "#ede9fe"]
+                    yr_bd_list = ["#94a3b8", "#64748b", "#3b82f6", "#6366f1", "#8b5cf6"]
+                    yr_tx_list = ["#334155", "#1e293b", "#1e40af", "#4338ca", "#5b21b6"]
+                    for idx, y_val in enumerate(sorted_sc_years):
+                        ci = idx % len(yr_bg_list)
+                        normal_val = sc_yearly_totals[y_val].get("Normal", 0)
+                        diff_html_yr = ""
+                        prev_y = y_val - 1
+                        if prev_y in sc_yearly_totals:
+                            prev_normal = sc_yearly_totals[prev_y].get("Normal", 0)
+                            if prev_normal > 0:
+                                d_val = normal_val - prev_normal
+                                r_val = (normal_val / prev_normal - 1) * 100
+                                ds = "+" if d_val >= 0 else ""
+                                rs = "+" if r_val >= 0 else ""
+                                dc = "#dc2626" if d_val < 0 else "#166534"
+                                diff_html_yr = (f'<div style="font-size:0.75rem; color:{dc}; margin-top:4px;">'
+                                                f'차이: {ds}{d_val:,.0f}<br>'
+                                                f'비율: {rs}{r_val:.1f}%</div>')
+                        yr_box_cols[idx].markdown(f"""
+<div style="background:{yr_bg_list[ci]}; border-radius:8px; padding:12px 16px; text-align:center; border:2px solid {yr_bd_list[ci]};">
+<div style="font-size:0.85rem; color:{yr_tx_list[ci]}; font-weight:600;">{int(y_val)}년 총합</div>
+<div style="font-size:1.5rem; font-weight:700; color:#1f2937;">{normal_val:,}</div>
+{diff_html_yr}
+</div>""", unsafe_allow_html=True)
+                    st.caption("※ Y-1(전년도) 대비 차이·비율 표시")
 
                 # ── 월별 상세 테이블 ──
                 sum_row_sc = {"연": "합계", "월": ""}
