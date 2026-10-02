@@ -615,7 +615,8 @@ def render_line_chart(df, x_col, y_cols, height=420, title=None,
         if col not in df.columns:
             continue
         fig.add_trace(go.Scatter(
-            x=df[x_col], y=df[col], mode="lines+markers", name=col,
+            x=df[x_col], y=df[col], mode="lines+markers",
+            name=SERIES_LABELS.get(col, col),
             line=dict(color=LINE_COLORS.get(col), width=2.2),
             marker=dict(size=5),
         ))
@@ -1077,7 +1078,18 @@ def render_yearly_diff_table(monthly_raw_df, target_col, selected_cols, key_pref
         else:
             add_diff(c)
 
-    render_html_diff_table(out, 'Year', target_col=target_col)
+    # 컬럼명을 SERIES_LABELS로 치환 (예측_판매량_v1 → 기존 단일 3차식 등)
+    rename_map = {}
+    for col_name in out.columns:
+        new_name = col_name
+        for raw_key, nice_label in SERIES_LABELS.items():
+            if raw_key in new_name:
+                new_name = new_name.replace(raw_key, nice_label)
+        if new_name != col_name:
+            rename_map[col_name] = new_name
+    out_display = out.rename(columns=rename_map)
+    target_display = SERIES_LABELS.get(target_col, target_col)
+    render_html_diff_table(out_display, 'Year', target_col=target_display if target_display in out_display.columns else None)
     return out
 
 
@@ -1109,6 +1121,17 @@ def _build_diff_table(df, x_col, target_col, selected_cols, target_label=None):
             pending_before_target.append(c)
         else:
             _add_diff(c)
+    # 컬럼명을 SERIES_LABELS로 치환
+    rename_map = {}
+    for col_name in out.columns:
+        new_name = col_name
+        for raw_key, nice_label in SERIES_LABELS.items():
+            if raw_key in new_name:
+                new_name = new_name.replace(raw_key, nice_label)
+        if new_name != col_name:
+            rename_map[col_name] = new_name
+    if rename_map:
+        out = out.rename(columns=rename_map)
     return out
 
 
@@ -1304,16 +1327,20 @@ ${poly_eq_str(cs, isu)}$
     yearly_table_eval = render_yearly_diff_table(monthly_eval_c, TARGET, table_series_eval, key_prefix="eval_yearly")
 
     monthly_table_eval = _build_diff_table(monthly_eval_c, 'Year_Month', TARGET, table_series_eval)
+    eval_target_display = SERIES_LABELS.get(TARGET, TARGET)
     st.markdown("**🗂️ 월별 상세 비교**")
-    render_diff_table(monthly_table_eval, 'Year_Month', target_col=TARGET, key_prefix="eval_monthly")
+    render_diff_table(monthly_table_eval, 'Year_Month',
+                      target_col=eval_target_display if eval_target_display in monthly_table_eval.columns else TARGET,
+                      key_prefix="eval_monthly")
 
     dl_eval1, dl_eval2 = st.columns(2)
+    eval_info = f"# 학습연도: {', '.join(str(y) for y in sorted(train_years_c))}\n# 검증연도: {', '.join(str(y) for y in sorted(eval_years_c))}\n"
     with dl_eval1:
-        csv_yearly_eval = yearly_table_eval.to_csv(index=False).encode('utf-8-sig')
+        csv_yearly_eval = (eval_info + yearly_table_eval.to_csv(index=False)).encode('utf-8-sig')
         st.download_button("📥 연도별 요약 다운로드", data=csv_yearly_eval,
                            file_name="냉방용_연도별요약.csv", mime="text/csv", key="dl_eval_yearly")
     with dl_eval2:
-        csv_monthly_eval = monthly_table_eval.to_csv(index=False).encode('utf-8-sig')
+        csv_monthly_eval = (eval_info + monthly_table_eval.to_csv(index=False)).encode('utf-8-sig')
         st.download_button("📥 월별 상세 다운로드", data=csv_monthly_eval,
                            file_name="냉방용_과거적합도_검증리포트.csv", mime="text/csv", key="dl_eval_monthly")
 
@@ -1455,12 +1482,18 @@ ${poly_eq_str(cs, isu)}$
         cols_order = ['Year_Month', '검침기온'] + [c for c in monthly_future_diff.columns
                                                   if c not in ('Year_Month', '검침기온')]
         disp_future = monthly_future_diff[cols_order].rename(columns={'검침기온': '예측기온'})
+        future_target_display = SERIES_LABELS.get(future_target_col, future_target_col)
         st.markdown("**🗂️ 월별 시나리오**")
         render_diff_table(disp_future, 'Year_Month',
-                          target_col=future_target_col if future_target_col in disp_future.columns else None,
+                          target_col=future_target_display if future_target_display in disp_future.columns else None,
                           key_prefix="future_monthly")
 
-        csv_future_c = disp_future.to_csv(index=False).encode('utf-8-sig')
+        # 다운로드 CSV — 상단에 학습연도, 미래기온추정 연도 정보 추가
+        info_line1 = f"# 학습연도: {', '.join(str(y) for y in sorted(train_years_c))}"
+        info_line2 = f"# 미래기온추정 연도: {', '.join(str(y) for y in sorted(future_years_c))}"
+        info_line3 = f"# 미래 예측기온 추정 기준: 최근 {y_years_c}년 평균"
+        csv_header = info_line1 + "\n" + info_line2 + "\n" + info_line3 + "\n"
+        csv_future_c = (csv_header + disp_future.to_csv(index=False)).encode('utf-8-sig')
         st.download_button("📥 냉방용 미래 시나리오 다운로드", data=csv_future_c,
                            file_name="냉방용_미래시나리오.csv", mime="text/csv")
     else:
