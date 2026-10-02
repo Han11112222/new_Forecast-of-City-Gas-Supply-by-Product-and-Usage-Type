@@ -1883,6 +1883,53 @@ def render_simulation_tab(merged, temp_monthly, supply_df, available_products, y
             has_base = prod in base_actual_totals
             base_total = base_actual_totals.get(prod, 0)
 
+            # ── 과거 5년 실적 박스 ──
+            st.markdown(f"**📊 {prod} — 최근 5년 실적 (Y-1 대비)**")
+            past_yearly_totals = {}
+            if prod in supply_df.columns:
+                _sup_past = supply_df[[prod]].copy()
+                _sup_past["연"] = _sup_past.index.year
+                for y in sorted(years_all):
+                    yr_sum = _sup_past[_sup_past["연"] == y][prod].sum()
+                    if yr_sum > 0:
+                        past_yearly_totals[y] = int(yr_sum)
+            else:
+                for y in sorted(years_all):
+                    yr_data = merged[merged["연"] == y]
+                    yr_sum = yr_data[prod].sum()
+                    if yr_sum > 0:
+                        past_yearly_totals[y] = int(yr_sum)
+
+            # 최근 5년만 표시
+            past_5_years = sorted(past_yearly_totals.keys())[-5:]
+            if past_5_years:
+                past_box_cols = st.columns(len(past_5_years))
+                past_bg = ["#f1f5f9", "#e2e8f0", "#dbeafe", "#e0e7ff", "#ede9fe"]
+                past_bd = ["#94a3b8", "#64748b", "#3b82f6", "#6366f1", "#8b5cf6"]
+                past_tx = ["#334155", "#1e293b", "#1e40af", "#4338ca", "#5b21b6"]
+                for i, y in enumerate(past_5_years):
+                    ci = i % len(past_bg)
+                    total = past_yearly_totals[y]
+                    diff_html = ""
+                    prev_y = y - 1
+                    if prev_y in past_yearly_totals and past_yearly_totals[prev_y] > 0:
+                        prev_total = past_yearly_totals[prev_y]
+                        diff_val = total - prev_total
+                        ratio_val = (total / prev_total - 1) * 100
+                        diff_sign = "+" if diff_val >= 0 else ""
+                        ratio_sign = "+" if ratio_val >= 0 else ""
+                        diff_color = "#dc2626" if diff_val < 0 else "#166534"
+                        diff_html = (f'<div style="font-size:0.75rem; color:{diff_color}; margin-top:4px;">'
+                                     f'차이: {diff_sign}{diff_val:,.0f}<br>'
+                                     f'비율: {ratio_sign}{ratio_val:.1f}%</div>')
+                    past_box_cols[i].markdown(f"""
+<div style="background:{past_bg[ci]}; border-radius:8px; padding:12px 16px; text-align:center; border:2px solid {past_bd[ci]};">
+<div style="font-size:0.85rem; color:{past_tx[ci]}; font-weight:600;">{y} 실적</div>
+<div style="font-size:1.5rem; font-weight:700; color:#1f2937;">{total:,}</div>
+{diff_html}
+</div>""", unsafe_allow_html=True)
+                st.caption("※ Y-1(전년도) 대비 차이·비율 표시")
+
             # ── 연도별 합산 비교표용 데이터 수집 ──
             yearly_summary_rows = []
             rolling_3yr_estimates = {}  # 롤링 3년평균용 누적 추정값
