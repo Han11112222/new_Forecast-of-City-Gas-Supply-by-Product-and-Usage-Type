@@ -1145,6 +1145,10 @@ def render_cooling_analysis():
         sales_df = load_cooling_sales()
         plan_df = load_cooling_plan()
         merged_cool = pd.merge(meter_temp_df, sales_df, on=['Year', 'Month'], how='inner')
+        # GJ → MJ 변환 (×1000)
+        merged_cool['판매량_실적'] = merged_cool['판매량_실적'] * 1000
+        if plan_df is not None and '판매량_계획' in plan_df.columns:
+            plan_df['판매량_계획'] = plan_df['판매량_계획'] * 1000
         merged_cool['Year_Month'] = merged_cool.apply(
             lambda r: f"{int(r['Year'])}-{int(r['Month']):02d}", axis=1)
 
@@ -1253,7 +1257,7 @@ ${poly_eq_str(cs, isu)}$
         st.scatter_chart(train_df_c.rename(columns={'검침기온': '실제기온'}), x='실제기온', y=TARGET, height=380)
 
     # ═══ 과거 적합도 검증 ═══
-    st.subheader("📊 과거 모델 적합도 검증 (냉방용)")
+    st.subheader("📊 과거 모델 적합도 검증 (냉방용, 단위: MJ)")
     eval_df_c = merged_cool[merged_cool['Year'].isin(eval_years_c)].copy()
     eval_df_c['예측_판매량_v1'] = model_base.predict(eval_df_c[['검침기온']])
     eval_df_c['예측_판매량_v3'] = predict_piecewise_seasonal(models_final, eval_df_c['검침기온'].values)
@@ -1346,7 +1350,7 @@ ${poly_eq_str(cs, isu)}$
 
     # ═══ 미래 시나리오 ═══
     st.markdown("---")
-    st.subheader("🔮 미래 냉방용 판매량 추정 시나리오")
+    st.subheader("🔮 미래 냉방용 판매량 추정 시나리오 (단위: MJ)")
 
     if future_years_c:
         N_roll_c = y_years_c
