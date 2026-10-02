@@ -3019,6 +3019,52 @@ def main():
                 sc_table_full = pd.concat([sc_table, pd.DataFrame([sum_row_sc])], ignore_index=True)
                 render_centered_table(sc_table_full, int_cols=list(scenarios_vf.keys()))
 
+                # ── Best/Conservative 다운로드 (CSV + Excel) ──
+                sc_info_lines = [
+                    f"# 상품: {prod}",
+                    f"# 학습연도: {', '.join(str(y) for y in sorted(vf_train_years))}",
+                    f"# 기온적용: 월평균기온 (전월 1일~당월 말일 평균)",
+                    f"# 기온시나리오: {', '.join(vf_temp_scenarios)}",
+                    f"# 예측모델: {sc_model_sel}",
+                    f"# Normal Δ°C={d_norm_vf}, Best Δ°C={d_best_vf}, Conservative Δ°C={d_cons_vf}",
+                ]
+                sc_header = "\n".join(sc_info_lines) + "\n"
+                sc_dl_df = sc_table_full.copy()
+                sc_dl_df[list(scenarios_vf.keys())] = sc_dl_df[list(scenarios_vf.keys())].apply(
+                    lambda c: pd.to_numeric(c, errors='coerce'))
+
+                sc_csv = (sc_header + sc_dl_df.to_csv(index=False)).encode("utf-8-sig")
+
+                dl_sc1, dl_sc2 = st.columns(2)
+                with dl_sc1:
+                    st.download_button(
+                        f"📥 {prod} Best/Conservative CSV 다운로드",
+                        data=sc_csv,
+                        file_name=f"Best_Conservative_{prod}.csv",
+                        mime="text/csv",
+                        key=f"dl_sc_csv_{prod}")
+                with dl_sc2:
+                    import io as _io
+                    sc_xlsx_buf = _io.BytesIO()
+                    with pd.ExcelWriter(sc_xlsx_buf, engine="openpyxl") as writer:
+                        # 정보 시트
+                        info_df = pd.DataFrame({"설정정보": [
+                            f"상품: {prod}",
+                            f"학습연도: {', '.join(str(y) for y in sorted(vf_train_years))}",
+                            f"기온적용: 월평균기온 (전월 1일~당월 말일 평균)",
+                            f"기온시나리오: {', '.join(vf_temp_scenarios)}",
+                            f"예측모델: {sc_model_sel}",
+                            f"Normal Δ°C={d_norm_vf}, Best Δ°C={d_best_vf}, Conservative Δ°C={d_cons_vf}",
+                        ]})
+                        info_df.to_excel(writer, sheet_name="설정정보", index=False)
+                        sc_dl_df.to_excel(writer, sheet_name="Best_Conservative", index=False)
+                    st.download_button(
+                        f"📥 {prod} Best/Conservative Excel 다운로드",
+                        data=sc_xlsx_buf.getvalue(),
+                        file_name=f"Best_Conservative_{prod}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key=f"dl_sc_xlsx_{prod}")
+
                 st.markdown("---")
 
     # ═══ TAB 3: 공급량 예측 ═══
