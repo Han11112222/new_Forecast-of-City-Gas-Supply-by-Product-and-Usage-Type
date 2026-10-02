@@ -2904,6 +2904,49 @@ def main():
                 sc_table = fut_df_vf[["연", "월"]].copy()
                 for sname in scenarios_vf:
                     sc_table[sname] = scenario_results[sname]
+
+                # ── 연도별 합계 박스 (Normal 대비 차이·비율) ──
+                sc_yearly_totals = {}
+                for sname in scenarios_vf:
+                    sc_table[sname] = sc_table[sname].astype(float)
+                    yearly_sums = sc_table.groupby("연")[sname].sum()
+                    for y_val, s_val in yearly_sums.items():
+                        if y_val not in sc_yearly_totals:
+                            sc_yearly_totals[y_val] = {}
+                        sc_yearly_totals[y_val][sname] = int(s_val)
+
+                sc_box_bg = {"Normal": "#f1f5f9", "Best": "#dbeafe", "Conservative": "#fef3c7"}
+                sc_box_bd = {"Normal": "#94a3b8", "Best": "#3b82f6", "Conservative": "#f59e0b"}
+                sc_box_tx = {"Normal": "#334155", "Best": "#1e40af", "Conservative": "#92400e"}
+
+                for y_val in sorted(sc_yearly_totals.keys()):
+                    st.markdown(f"**📊 {int(y_val)}년 시나리오별 연간 총량 (Normal 대비)**")
+                    sc_box_cols = st.columns(len(scenarios_vf))
+                    normal_total = sc_yearly_totals[y_val].get("Normal", 0)
+                    for i, sname in enumerate(scenarios_vf):
+                        total_val = sc_yearly_totals[y_val].get(sname, 0)
+                        bg = sc_box_bg.get(sname, "#f1f5f9")
+                        bd = sc_box_bd.get(sname, "#94a3b8")
+                        tx = sc_box_tx.get(sname, "#334155")
+                        diff_html = ""
+                        if sname != "Normal" and normal_total > 0:
+                            diff_val = total_val - normal_total
+                            ratio_val = (total_val / normal_total - 1) * 100
+                            diff_sign = "+" if diff_val >= 0 else ""
+                            ratio_sign = "+" if ratio_val >= 0 else ""
+                            diff_color = "#dc2626" if diff_val < 0 else "#166534"
+                            diff_html = (f'<div style="font-size:0.75rem; color:{diff_color}; margin-top:4px;">'
+                                         f'차이: {diff_sign}{diff_val:,.0f}<br>'
+                                         f'비율: {ratio_sign}{ratio_val:.1f}%</div>')
+                        sc_box_cols[i].markdown(f"""
+<div style="background:{bg}; border-radius:8px; padding:12px 16px; text-align:center; border:2px solid {bd};">
+<div style="font-size:0.85rem; color:{tx}; font-weight:600;">{sname}</div>
+<div style="font-size:1.5rem; font-weight:700; color:#1f2937;">{total_val:,}</div>
+{diff_html}
+</div>""", unsafe_allow_html=True)
+                    st.caption("※ Normal 대비 차이·비율 표시")
+
+                # ── 월별 상세 테이블 ──
                 sum_row_sc = {"연": "합계", "월": ""}
                 for sname in scenarios_vf:
                     sum_row_sc[sname] = int(sc_table[sname].sum())
