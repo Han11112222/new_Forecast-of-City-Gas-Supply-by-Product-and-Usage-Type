@@ -1641,10 +1641,13 @@ def _compute_temp_scenarios(temp_monthly, all_years, pred_year, prev_3yr_estimat
     # 로직: 온전하지 않은 달은 Y-1년의 동월 기온을 가져온 뒤,
     #       3년 평균 등 시나리오 계산에 사용 (예: 2026년 9~12월 → 2025년 9~12월 기온 사용)
     years_to_fill = sorted(y for y in filtered_years if y <= pred_year)
-    # pred_year도 포함 (미래 연도)
-    if pred_year not in years_to_fill:
-        years_to_fill.append(pred_year)
-        years_to_fill.sort()
+    # pred_year뿐 아니라 중간 미래 연도도 모두 포함 (롤링 3년평균이 올바르게 작동하도록)
+    # 예: pred_year=2029일 때 2027, 2028도 pool에 추가해야 recent_3에 포함됨
+    max_actual = max(filtered_years) if filtered_years else pred_year
+    for fy in range(max_actual + 1, pred_year + 1):
+        if fy not in years_to_fill:
+            years_to_fill.append(fy)
+    years_to_fill.sort()
 
     for y in years_to_fill:
         missing_months = [m for m in range(1, 13) if (y, m) not in temp_pool]
@@ -1935,6 +1938,7 @@ def render_simulation_tab(merged, temp_monthly, supply_df, available_products, y
 
             # ── 연도별 합산 비교표용 데이터 수집 ──
             yearly_summary_rows = []
+            all_year_dfs_for_download = []  # 일괄 다운로드용
             rolling_3yr_estimates = {}  # 롤링 3년평균용 누적 추정값
 
             for sim_pred_year in sorted(sim_pred_years):
@@ -2117,6 +2121,8 @@ def render_simulation_tab(merged, temp_monthly, supply_df, available_products, y
                 st.download_button(f"📥 {prod} {sim_pred_year}년 시뮬레이션 결과 다운로드", data=csv_sim,
                                    file_name=f"시뮬레이션_{prod}_{sim_pred_year}.csv",
                                    mime="text/csv", key=f"dl_sim_{prod}_{sim_pred_year}")
+                # 일괄 다운로드용 수집
+                all_year_dfs_for_download.append(diff_df_sim.copy())
 
                 st.markdown("---")
 
@@ -2127,6 +2133,36 @@ def render_simulation_tab(merged, temp_monthly, supply_df, available_products, y
                 actual_col_name = f"{latest_actual_year} 실적"
                 render_html_diff_table(yearly_out, "Year",
                                        target_col=actual_col_name if has_base else None)
+
+            # ── 일괄 다운로드 (모든 예측 연도 통합) ──
+            if all_year_dfs_for_download:
+                combined_df = pd.concat(all_year_dfs_for_download, ignore_index=True)
+                pred_years_str = "_".join(str(y) for y in sorted(sim_pred_years))
+
+                dl_c1, dl_c2 = st.columns(2)
+                with dl_c1:
+                    csv_all = combined_df.to_csv(index=False).encode("utf-8-sig")
+                    st.download_button(
+                        f"📥 {prod} 전체 연도 시뮬레이션 일괄 다운로드 (CSV)",
+                        data=csv_all,
+                        file_name=f"시뮬레이션_{prod}_{pred_years_str}_전체.csv",
+                        mime="text/csv",
+                        key=f"dl_sim_all_csv_{prod}")
+                with dl_c2:
+                    buf_xl = BytesIO()
+                    with pd.ExcelWriter(buf_xl, engine="openpyxl") as writer:
+                        for i, yr_df in enumerate(all_year_dfs_for_download):
+                            yr_label = sorted(sim_pred_years)[i] if i < len(sim_pred_years) else f"sheet{i}"
+                            yr_df.to_excel(writer, sheet_name=str(yr_label), index=False)
+                        if len(yearly_summary_rows) > 1:
+                            pd.DataFrame(yearly_summary_rows).to_excel(
+                                writer, sheet_name="연도별합산", index=False)
+                    st.download_button(
+                        f"📥 {prod} 전체 연도 시뮬레이션 일괄 다운로드 (Excel)",
+                        data=buf_xl.getvalue(),
+                        file_name=f"시뮬레이션_{prod}_{pred_years_str}_전체.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key=f"dl_sim_all_xlsx_{prod}")
 
             st.markdown("---")
 
