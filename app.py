@@ -1899,6 +1899,9 @@ def render_simulation_tab(merged, temp_monthly, supply_df, available_products, y
                     yr_sum = yr_data[prod].sum()
                     if yr_sum > 0:
                         past_yearly_totals[y] = int(yr_sum)
+            # 최신 실적 연도(2026)는 SHEET4(사업계획 실적 추정)에서 가져온 값으로 덮어쓰기
+            if has_base and latest_actual_year in past_yearly_totals:
+                past_yearly_totals[latest_actual_year] = int(base_total)
 
             # 최근 5년만 표시
             past_5_years = sorted(past_yearly_totals.keys())[-5:]
