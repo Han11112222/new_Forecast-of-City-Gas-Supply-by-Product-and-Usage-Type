@@ -1528,15 +1528,39 @@ ${poly_eq_str(cs, isu)}$
         if 'supply_right' not in st.session_state:
             st.session_state['supply_right'] = list(_default_right)
 
-        # 현재 적용 중인 비율표 표시
+        # 현재 적용 중인 비율표 표시 (스프레드시트 형태)
         with st.expander("📋 현재 적용 중인 비율표 (클릭하여 확인/변경)", expanded=False):
-            ratio_display = pd.DataFrame({
-                '월': [f"{m}월" for m in range(1, 13)],
-                '반영비율(104행)': [f"{v*100:.1f}%" for v in st.session_state['supply_ratio104']],
-                'Left 비율': [f"{v*100:.1f}%" for v in st.session_state['supply_left']],
-                'Right 비율': [f"{v*100:.1f}%" for v in st.session_state['supply_right']],
-            })
-            st.dataframe(ratio_display, use_container_width=True, hide_index=True)
+            _month_cols = [f"{m}월" for m in range(1, 13)]
+
+            # 1) 반영비율 (104행)
+            st.markdown("**1) 공급량-가스공사제출 판매량 비율 (104행)**")
+            ratio104_row = {c: f"{v*100:.1f}%" for c, v in zip(_month_cols, st.session_state['supply_ratio104'])}
+            ratio104_df = pd.DataFrame([ratio104_row], index=['반영비율'])
+            st.dataframe(ratio104_df, use_container_width=True)
+
+            # 2) 월별 공급량-판매량 비율 (냉난방공조용)
+            st.markdown("**2) 월별 공급량-판매량 비율 — 냉난방공조용 (115행/130행)**")
+            # 스프레드시트 형식: 공급량(M) / 판매량(M+1) 쌍
+            header_pairs = []
+            left_vals = {}
+            right_vals = {}
+            for m in range(12):
+                m_next = (m + 1) % 12
+                col_supply = f"공급량 {m+1}월"
+                col_sales  = f"판매량 {m_next+1}월"
+                header_pairs.extend([col_supply, col_sales])
+                left_vals[col_supply] = f"{st.session_state['supply_left'][m]*100:.1f}%"
+                right_vals[col_sales] = f"{st.session_state['supply_right'][m]*100:.1f}%"
+                left_vals[col_sales] = ""
+                right_vals[col_supply] = ""
+
+            # 간결한 형태: Left/Right를 월별로 나란히 표시
+            lr_data = {}
+            for m in range(12):
+                lr_data[f"{m+1}월 Left"] = f"{st.session_state['supply_left'][m]*100:.1f}%"
+                lr_data[f"{m+1}월 Right"] = f"{st.session_state['supply_right'][m]*100:.1f}%"
+            lr_df = pd.DataFrame([lr_data], index=['냉난방공조용'])
+            st.dataframe(lr_df, use_container_width=True)
 
             # 비율표 업로드
             st.markdown("""
