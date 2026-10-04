@@ -1500,6 +1500,172 @@ ${poly_eq_str(cs, isu)}$
         csv_future_c = (csv_header + disp_future.to_csv(index=False)).encode('utf-8-sig')
         st.download_button("📥 냉방용 미래 시나리오 다운로드", data=csv_future_c,
                            file_name="냉방용_미래시나리오.csv", mime="text/csv")
+
+        # ═══ 공급량 변환 (판매량 → 공급량) ═══
+        st.markdown("---")
+        st.subheader("📦 공급량 변환 (판매량 MJ → 공급량 GJ)")
+        st.markdown("""
+        <div style="background:#eef6ff;padding:12px 16px;border-radius:8px;border-left:4px solid #3b82f6;margin-bottom:16px;font-size:0.92em;">
+        예측된 냉방용 <b>판매량(MJ)</b>을 빌링팀 비율표를 적용하여 <b>공급량(GJ)</b>으로 역산합니다.<br>
+        • 반영비율(104행) + 섹션2 월별 비율(left/right)을 모두 반영합니다.<br>
+        • 비율표 구조상 정확한 역산이 불가능하여, <b>최적 근사치(±오차%)</b>를 산출합니다.
+        </div>
+        """, unsafe_allow_html=True)
+
+        # 변환할 모델 선택
+        convert_model_map = {'기존 단일 3차식': '예측_판매량_v1', '분리·2차식': '예측_판매량_v3'}
+        if has_cubic_split:
+            convert_model_map['분리·3차식(참고)'] = '예측_판매량_v2'
+        convert_model_name = st.selectbox("변환할 모델 선택", list(convert_model_map.keys()),
+                                           index=0, key="supply_convert_model")
+        convert_col = convert_model_map[convert_model_name]
+
+        if st.button("🔄 공급량 변환 실행", key="btn_supply_convert"):
+            # ── 반영비율(104행) + 섹션2 비율표 ──
+            ratio104 = np.array([0.952, 0.999, 1.035, 1.058, 1.059, 1.052,
+                                 1.046, 1.051, 1.027, 1.052, 1.011, 1.005])
+            left_r  = np.array([0.467, 0.619, 0.603, 0.542, 0.305, 0.436,
+                                0.465, 0.489, 0.565, 0.631, 0.375, 0.469])
+            right_r = np.array([0.533, 0.381, 0.397, 0.458, 0.618, 0.564,
+                                0.535, 0.511, 0.435, 0.369, 0.625, 0.531])
+
+            # 계수 행렬 구성: 판매량_M = 공급량_(M-1)×반영비율_(M-1)×right_(M-1) + 공급량_M×반영비율_M×left_M
+            A_mat = np.zeros((12, 12))
+            for m_idx in range(12):
+                p_idx = (m_idx - 1) % 12
+                A_mat[m_idx, p_idx] = ratio104[p_idx] * right_r[p_idx]
+                A_mat[m_idx, m_idx] = ratio104[m_idx] * left_r[m_idx]
+            A_inv = np.linalg.inv(A_mat)
+
+            all_convert_results = []
+            for fy in sorted(future_years_c):
+                fy = int(fy)
+                yr_data = future_df_c[future_df_c['Year'] == fy].sort_values('Month')
+                if len(yr_data) < 12:
+                    continue
+
+                # MJ → GJ 변환
+                sales_mj = yr_data[convert_col].values
+                P_gj = sales_mj / 1000.0
+
+                # 정확한 해 (음수 가능)
+                S_exact = A_inv @ P_gj
+
+                if np.all(S_exact >= 0):
+                    # 음수 없으면 정확한 해 사용
+                    S_opt = S_exact
+                    epsilon_pct = 0.0
+                else:
+                    # 해석적 minimax 근사
+                    neg_mask = S_exact < 0
+                    sigma = np.where(neg_mask, -1.0, 1.0)
+                    D_vec = A_inv @ (P_gj * sigma)
+
+                    # epsilon 범위 계산
+                    eps_lo = 0.0
+                    eps_hi = float('inf')
+                    feasible = True
+                    for m_idx in range(12):
+                        if S_exact[m_idx] < 0:
+                            if D_vec[m_idx] > 0:
+                                eps_lo = max(eps_lo, -S_exact[m_idx] / D_vec[m_idx])
+                            else:
+                                feasible = False
+                                break
+                        else:
+                            if D_vec[m_idx] < 0:
+                                eps_hi = min(eps_hi, S_exact[m_idx] / (-D_vec[m_idx]))
+
+                    if feasible and eps_lo <= eps_hi:
+                        epsilon = eps_lo * 1.0001
+                        S_opt = S_exact + epsilon * D_vec
+                        S_opt = np.maximum(S_opt, 0)
+                        epsilon_pct = epsilon * 100
+                    else:
+                        # fallback: 단순 비율 변환
+                        S_opt = P_gj / (ratio104 * left_r)
+                        epsilon_pct = -1  # 표시용
+
+                # 검수 (정방향 계산)
+                sales_check = A_mat @ S_opt
+
+                for m_idx in range(12):
+                    err_pct = (sales_check[m_idx] - P_gj[m_idx]) / P_gj[m_idx] * 100 if P_gj[m_idx] != 0 else 0
+                    all_convert_results.append({
+                        '연도': fy, '월': m_idx + 1,
+                        'Year_Month': f"{fy}-{m_idx+1:02d}",
+                        f'예측 판매량(MJ)': round(sales_mj[m_idx], 1),
+                        f'예측 판매량(GJ)': round(P_gj[m_idx], 1),
+                        '변환 공급량(GJ)': round(S_opt[m_idx], 0),
+                        '검수 판매량(GJ)': round(sales_check[m_idx], 1),
+                        '목표 판매량(GJ)': round(P_gj[m_idx], 1),
+                        '오차(%)': round(err_pct, 2),
+                        '_epsilon': epsilon_pct,
+                    })
+
+            if all_convert_results:
+                result_df = pd.DataFrame(all_convert_results)
+
+                for fy in sorted(result_df['연도'].unique()):
+                    yr_result = result_df[result_df['연도'] == fy]
+                    eps_val = yr_result['_epsilon'].iloc[0]
+
+                    if eps_val == 0:
+                        st.success(f"✅ {fy}년: 정확한 역산 성공 (오차 0%)")
+                    elif eps_val > 0:
+                        st.info(f"📊 {fy}년: 최적 근사 (최대 오차 ±{eps_val:.2f}%)")
+                    else:
+                        st.warning(f"⚠️ {fy}년: 단순 비율 변환 적용 (해석적 해 불가)")
+
+                    disp_cols = ['Year_Month', '예측 판매량(MJ)', '변환 공급량(GJ)',
+                                 '검수 판매량(GJ)', '목표 판매량(GJ)', '오차(%)']
+                    disp = yr_result[disp_cols].copy()
+
+                    # 합계행 추가
+                    sum_row = pd.DataFrame([{
+                        'Year_Month': '합계',
+                        '예측 판매량(MJ)': disp['예측 판매량(MJ)'].sum(),
+                        '변환 공급량(GJ)': disp['변환 공급량(GJ)'].sum(),
+                        '검수 판매량(GJ)': disp['검수 판매량(GJ)'].sum(),
+                        '목표 판매량(GJ)': disp['목표 판매량(GJ)'].sum(),
+                        '오차(%)': round((disp['검수 판매량(GJ)'].sum() - disp['목표 판매량(GJ)'].sum())
+                                        / disp['목표 판매량(GJ)'].sum() * 100, 2) if disp['목표 판매량(GJ)'].sum() != 0 else 0,
+                    }])
+                    disp = pd.concat([disp, sum_row], ignore_index=True)
+
+                    # 숫자 포맷
+                    fmt_cols = ['예측 판매량(MJ)', '변환 공급량(GJ)', '검수 판매량(GJ)', '목표 판매량(GJ)']
+                    for fc in fmt_cols:
+                        disp[fc] = disp[fc].apply(lambda x: f"{x:,.0f}")
+                    disp['오차(%)'] = disp['오차(%)'].apply(lambda x: f"{x:+.2f}%")
+
+                    st.dataframe(disp, use_container_width=True, hide_index=True)
+
+                # 다운로드 (CSV + Excel)
+                dl_df = result_df[['Year_Month', '예측 판매량(MJ)', '예측 판매량(GJ)',
+                                   '변환 공급량(GJ)', '검수 판매량(GJ)', '목표 판매량(GJ)', '오차(%)']].copy()
+                info_cv = f"# 변환 모델: {convert_model_name}\n# 반영비율(104행) + 섹션2 비율표 적용\n"
+                csv_cv = (info_cv + dl_df.to_csv(index=False)).encode('utf-8-sig')
+
+                col_dl1, col_dl2 = st.columns(2)
+                with col_dl1:
+                    st.download_button("📥 공급량 변환 결과 CSV", data=csv_cv,
+                                       file_name="공급량_변환결과.csv", mime="text/csv",
+                                       key="dl_supply_csv")
+                with col_dl2:
+                    try:
+                        import io
+                        buf = io.BytesIO()
+                        with pd.ExcelWriter(buf, engine='openpyxl') as ew:
+                            dl_df.to_excel(ew, index=False, sheet_name='공급량변환')
+                        buf.seek(0)
+                        st.download_button("📥 공급량 변환 결과 Excel", data=buf.getvalue(),
+                                           file_name="공급량_변환결과.xlsx",
+                                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                           key="dl_supply_xlsx")
+                    except Exception:
+                        pass
+
     else:
         st.info("좌측에서 미래 시나리오 추정 연도를 선택하면 결과가 표시됩니다.")
 
