@@ -1503,14 +1503,104 @@ ${poly_eq_str(cs, isu)}$
 
         # ═══ 공급량 변환 (판매량 → 공급량) ═══
         st.markdown("---")
-        st.subheader("📦 공급량 변환 (판매량 MJ → 공급량 GJ)")
+        st.subheader("📦 공급량 변환 (판매량 → 공급량, 단위: MJ)")
         st.markdown("""
         <div style="background:#eef6ff;padding:12px 16px;border-radius:8px;border-left:4px solid #3b82f6;margin-bottom:16px;font-size:0.92em;">
-        예측된 냉방용 <b>판매량(MJ)</b>을 빌링팀 비율표를 적용하여 <b>공급량(GJ)</b>으로 역산합니다.<br>
+        예측된 냉방용 <b>판매량(MJ)</b>을 빌링팀 비율표를 적용하여 <b>공급량(MJ)</b>으로 역산합니다.<br>
         • 반영비율(104행) + 섹션2 월별 비율(left/right)을 모두 반영합니다.<br>
         • 비율표 구조상 정확한 역산이 불가능하여, <b>최적 근사치(±오차%)</b>를 산출합니다.
         </div>
         """, unsafe_allow_html=True)
+
+        # ── 기본 비율표 (하드코딩) ──
+        _default_ratio104 = [0.952, 0.999, 1.035, 1.058, 1.059, 1.052,
+                             1.046, 1.051, 1.027, 1.052, 1.011, 1.005]
+        _default_left     = [0.467, 0.619, 0.603, 0.542, 0.305, 0.436,
+                             0.465, 0.489, 0.565, 0.631, 0.375, 0.469]
+        _default_right    = [0.533, 0.381, 0.397, 0.458, 0.618, 0.564,
+                             0.535, 0.511, 0.435, 0.369, 0.625, 0.531]
+
+        # session_state에 저장된 업로드 비율이 있으면 사용
+        if 'supply_ratio104' not in st.session_state:
+            st.session_state['supply_ratio104'] = list(_default_ratio104)
+        if 'supply_left' not in st.session_state:
+            st.session_state['supply_left'] = list(_default_left)
+        if 'supply_right' not in st.session_state:
+            st.session_state['supply_right'] = list(_default_right)
+
+        # 현재 적용 중인 비율표 표시
+        with st.expander("📋 현재 적용 중인 비율표 (클릭하여 확인/변경)", expanded=False):
+            ratio_display = pd.DataFrame({
+                '월': [f"{m}월" for m in range(1, 13)],
+                '반영비율(104행)': [f"{v*100:.1f}%" for v in st.session_state['supply_ratio104']],
+                'Left 비율': [f"{v*100:.1f}%" for v in st.session_state['supply_left']],
+                'Right 비율': [f"{v*100:.1f}%" for v in st.session_state['supply_right']],
+            })
+            st.dataframe(ratio_display, use_container_width=True, hide_index=True)
+
+            # 비율표 업로드
+            st.markdown("""
+            <div style="background:#fff8e1;padding:10px 14px;border-radius:6px;border-left:4px solid #f59e0b;margin:8px 0;font-size:0.88em;">
+            비율이 변경되면 아래에서 CSV 파일을 업로드하세요.<br>
+            CSV 형식: <code>월, 반영비율, Left, Right</code> (12행, 헤더 포함)<br>
+            예) <code>1, 0.952, 0.467, 0.533</code>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # 현재 비율표 다운로드 (템플릿 겸용)
+            tmpl_df = pd.DataFrame({
+                '월': list(range(1, 13)),
+                '반영비율': st.session_state['supply_ratio104'],
+                'Left': st.session_state['supply_left'],
+                'Right': st.session_state['supply_right'],
+            })
+            tmpl_csv = tmpl_df.to_csv(index=False).encode('utf-8-sig')
+            st.download_button("📥 현재 비율표 다운로드 (CSV 템플릿)", data=tmpl_csv,
+                               file_name="비율표_템플릿.csv", mime="text/csv",
+                               key="dl_ratio_template")
+
+            uploaded_ratio = st.file_uploader("비율표 CSV 업로드", type=['csv'], key="upload_ratio_csv")
+            if uploaded_ratio is not None:
+                try:
+                    ratio_up = pd.read_csv(uploaded_ratio)
+                    # 컬럼명 정규화
+                    ratio_up.columns = [c.strip() for c in ratio_up.columns]
+                    cols_map = {}
+                    for c in ratio_up.columns:
+                        cl = c.lower().replace(' ', '')
+                        if '반영' in c or 'ratio' in cl or '104' in c:
+                            cols_map['반영비율'] = c
+                        elif 'left' in cl or c == 'Left':
+                            cols_map['Left'] = c
+                        elif 'right' in cl or c == 'Right':
+                            cols_map['Right'] = c
+                        elif '월' in c or 'month' in cl:
+                            cols_map['월'] = c
+                    if len(ratio_up) == 12 and '반영비율' in cols_map and 'Left' in cols_map and 'Right' in cols_map:
+                        new_r104 = ratio_up[cols_map['반영비율']].astype(float).tolist()
+                        new_left = ratio_up[cols_map['Left']].astype(float).tolist()
+                        new_right = ratio_up[cols_map['Right']].astype(float).tolist()
+
+                        # 값 범위 검증 (0~2 사이)
+                        all_vals = new_r104 + new_left + new_right
+                        if all(0 < v < 2 for v in all_vals):
+                            st.session_state['supply_ratio104'] = new_r104
+                            st.session_state['supply_left'] = new_left
+                            st.session_state['supply_right'] = new_right
+                            st.success("✅ 비율표가 업데이트되었습니다! 아래 변환 버튼을 눌러 적용하세요.")
+                        else:
+                            st.error("⚠️ 비율값이 0~2 범위를 벗어났습니다. 확인해주세요.")
+                    else:
+                        st.error("⚠️ CSV 형식 오류: 12행 + 반영비율/Left/Right 컬럼이 필요합니다.")
+                except Exception as e:
+                    st.error(f"⚠️ 파일 읽기 오류: {e}")
+
+            if st.button("🔄 기본 비율표로 초기화", key="btn_reset_ratio"):
+                st.session_state['supply_ratio104'] = list(_default_ratio104)
+                st.session_state['supply_left'] = list(_default_left)
+                st.session_state['supply_right'] = list(_default_right)
+                st.success("기본 비율표로 초기화되었습니다.")
+                st.rerun()
 
         # 변환할 모델 선택
         convert_model_map = {'기존 단일 3차식': '예측_판매량_v1', '분리·2차식': '예측_판매량_v3'}
@@ -1521,13 +1611,10 @@ ${poly_eq_str(cs, isu)}$
         convert_col = convert_model_map[convert_model_name]
 
         if st.button("🔄 공급량 변환 실행", key="btn_supply_convert"):
-            # ── 반영비율(104행) + 섹션2 비율표 ──
-            ratio104 = np.array([0.952, 0.999, 1.035, 1.058, 1.059, 1.052,
-                                 1.046, 1.051, 1.027, 1.052, 1.011, 1.005])
-            left_r  = np.array([0.467, 0.619, 0.603, 0.542, 0.305, 0.436,
-                                0.465, 0.489, 0.565, 0.631, 0.375, 0.469])
-            right_r = np.array([0.533, 0.381, 0.397, 0.458, 0.618, 0.564,
-                                0.535, 0.511, 0.435, 0.369, 0.625, 0.531])
+            # ── session_state에서 비율표 로드 ──
+            ratio104 = np.array(st.session_state['supply_ratio104'])
+            left_r  = np.array(st.session_state['supply_left'])
+            right_r = np.array(st.session_state['supply_right'])
 
             # 계수 행렬 구성: 판매량_M = 공급량_(M-1)×반영비율_(M-1)×right_(M-1) + 공급량_M×반영비율_M×left_M
             A_mat = np.zeros((12, 12))
@@ -1544,24 +1631,21 @@ ${poly_eq_str(cs, isu)}$
                 if len(yr_data) < 12:
                     continue
 
-                # MJ → GJ 변환
-                sales_mj = yr_data[convert_col].values
-                P_gj = sales_mj / 1000.0
+                # 판매량 MJ 그대로 사용
+                P_mj = yr_data[convert_col].values.astype(float)
 
                 # 정확한 해 (음수 가능)
-                S_exact = A_inv @ P_gj
+                S_exact = A_inv @ P_mj
 
                 if np.all(S_exact >= 0):
-                    # 음수 없으면 정확한 해 사용
                     S_opt = S_exact
                     epsilon_pct = 0.0
                 else:
                     # 해석적 minimax 근사
                     neg_mask = S_exact < 0
                     sigma = np.where(neg_mask, -1.0, 1.0)
-                    D_vec = A_inv @ (P_gj * sigma)
+                    D_vec = A_inv @ (P_mj * sigma)
 
-                    # epsilon 범위 계산
                     eps_lo = 0.0
                     eps_hi = float('inf')
                     feasible = True
@@ -1582,23 +1666,20 @@ ${poly_eq_str(cs, isu)}$
                         S_opt = np.maximum(S_opt, 0)
                         epsilon_pct = epsilon * 100
                     else:
-                        # fallback: 단순 비율 변환
-                        S_opt = P_gj / (ratio104 * left_r)
-                        epsilon_pct = -1  # 표시용
+                        S_opt = P_mj / (ratio104 * left_r)
+                        epsilon_pct = -1
 
                 # 검수 (정방향 계산)
                 sales_check = A_mat @ S_opt
 
                 for m_idx in range(12):
-                    err_pct = (sales_check[m_idx] - P_gj[m_idx]) / P_gj[m_idx] * 100 if P_gj[m_idx] != 0 else 0
+                    err_pct = (sales_check[m_idx] - P_mj[m_idx]) / P_mj[m_idx] * 100 if P_mj[m_idx] != 0 else 0
                     all_convert_results.append({
                         '연도': fy, '월': m_idx + 1,
                         'Year_Month': f"{fy}-{m_idx+1:02d}",
-                        f'예측 판매량(MJ)': round(sales_mj[m_idx], 1),
-                        f'예측 판매량(GJ)': round(P_gj[m_idx], 1),
-                        '변환 공급량(GJ)': round(S_opt[m_idx], 0),
-                        '검수 판매량(GJ)': round(sales_check[m_idx], 1),
-                        '목표 판매량(GJ)': round(P_gj[m_idx], 1),
+                        '예측 판매량(MJ)': round(P_mj[m_idx], 1),
+                        '변환 공급량(MJ)': round(S_opt[m_idx], 0),
+                        '검수 판매량(MJ)': round(sales_check[m_idx], 1),
                         '오차(%)': round(err_pct, 2),
                         '_epsilon': epsilon_pct,
                     })
@@ -1617,33 +1698,31 @@ ${poly_eq_str(cs, isu)}$
                     else:
                         st.warning(f"⚠️ {fy}년: 단순 비율 변환 적용 (해석적 해 불가)")
 
-                    disp_cols = ['Year_Month', '예측 판매량(MJ)', '변환 공급량(GJ)',
-                                 '검수 판매량(GJ)', '목표 판매량(GJ)', '오차(%)']
+                    disp_cols = ['Year_Month', '예측 판매량(MJ)', '변환 공급량(MJ)',
+                                 '검수 판매량(MJ)', '오차(%)']
                     disp = yr_result[disp_cols].copy()
 
                     # 합계행 추가
                     sum_row = pd.DataFrame([{
                         'Year_Month': '합계',
                         '예측 판매량(MJ)': disp['예측 판매량(MJ)'].sum(),
-                        '변환 공급량(GJ)': disp['변환 공급량(GJ)'].sum(),
-                        '검수 판매량(GJ)': disp['검수 판매량(GJ)'].sum(),
-                        '목표 판매량(GJ)': disp['목표 판매량(GJ)'].sum(),
-                        '오차(%)': round((disp['검수 판매량(GJ)'].sum() - disp['목표 판매량(GJ)'].sum())
-                                        / disp['목표 판매량(GJ)'].sum() * 100, 2) if disp['목표 판매량(GJ)'].sum() != 0 else 0,
+                        '변환 공급량(MJ)': disp['변환 공급량(MJ)'].sum(),
+                        '검수 판매량(MJ)': disp['검수 판매량(MJ)'].sum(),
+                        '오차(%)': round((disp['검수 판매량(MJ)'].sum() - disp['예측 판매량(MJ)'].sum())
+                                        / disp['예측 판매량(MJ)'].sum() * 100, 2) if disp['예측 판매량(MJ)'].sum() != 0 else 0,
                     }])
                     disp = pd.concat([disp, sum_row], ignore_index=True)
 
                     # 숫자 포맷
-                    fmt_cols = ['예측 판매량(MJ)', '변환 공급량(GJ)', '검수 판매량(GJ)', '목표 판매량(GJ)']
-                    for fc in fmt_cols:
+                    for fc in ['예측 판매량(MJ)', '변환 공급량(MJ)', '검수 판매량(MJ)']:
                         disp[fc] = disp[fc].apply(lambda x: f"{x:,.0f}")
                     disp['오차(%)'] = disp['오차(%)'].apply(lambda x: f"{x:+.2f}%")
 
                     st.dataframe(disp, use_container_width=True, hide_index=True)
 
                 # 다운로드 (CSV + Excel)
-                dl_df = result_df[['Year_Month', '예측 판매량(MJ)', '예측 판매량(GJ)',
-                                   '변환 공급량(GJ)', '검수 판매량(GJ)', '목표 판매량(GJ)', '오차(%)']].copy()
+                dl_df = result_df[['Year_Month', '예측 판매량(MJ)',
+                                   '변환 공급량(MJ)', '검수 판매량(MJ)', '오차(%)']].copy()
                 info_cv = f"# 변환 모델: {convert_model_name}\n# 반영비율(104행) + 섹션2 비율표 적용\n"
                 csv_cv = (info_cv + dl_df.to_csv(index=False)).encode('utf-8-sig')
 
