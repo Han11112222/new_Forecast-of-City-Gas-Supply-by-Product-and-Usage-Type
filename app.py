@@ -1904,7 +1904,7 @@ def render_sales_vs_supply(supply_df, sales_df):
 # Tab 6: 개별난방용 Simulation
 # ══════════════════════════════════════════════
 
-def _compute_temp_scenarios(temp_monthly, all_years, pred_year, prev_3yr_estimates=None):
+def _compute_temp_scenarios(temp_monthly, all_years, pred_year, prev_3yr_estimates=None, temp_col="월평균기온"):
     """
     기온 시나리오 5가지를 계산한다.
     공급량 예측 검증 탭과 동일한 롤링 평균 + 누적 추정 로직 사용.
@@ -1939,7 +1939,7 @@ def _compute_temp_scenarios(temp_monthly, all_years, pred_year, prev_3yr_estimat
         y, m = int(row["연"]), int(row["월"])
         if y < 2020:
             continue
-        temp_pool[(y, m)] = float(row["월평균기온"])
+        temp_pool[(y, m)] = float(row[temp_col])
 
     pool_years = set(y for y, _ in temp_pool.keys())
 
@@ -2473,6 +2473,415 @@ def render_simulation_tab(merged, temp_monthly, supply_df, available_products, y
             st.markdown("---")
 
 
+def render_cooling_simulation_tab(merged, meter_temp_monthly, temp_monthly, supply_df, available_products, years_all):
+    """Tab 7: 냉방용 Simulation — 검침기온(전월16~당월15일) 기반 기온 시나리오별 공급량 예측 비교"""
+    st.markdown("### 🧊 냉방용 Simulation")
+    st.markdown("""
+    <div class="info-box">
+    <b>검침기온(전월16~당월15일)</b> 기반 기온 시나리오별 예측 공급량을 비교 시뮬레이션합니다.<br>
+    5가지 기온 시나리오: <b>3년 평균</b> · <b>Max,min 제외</b> · <b>전년도 기온</b> · <b>이상기온 제외(IQR)</b> · <b>추세반영기온(극단값 제거 추세)</b><br>
+    3가지 예측 모델: <b>Poly-3 단일</b> · <b>분리·3차식</b> · <b>분리·2차식</b>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── 검침기온을 merged에 붙이기 ──
+    merged_cool = merged.copy()
+    meter_map = {}
+    for _, row in meter_temp_monthly.iterrows():
+        meter_map[(int(row["연"]), int(row["월"]))] = float(row["검침기온"])
+    merged_cool["검침기온"] = merged_cool.apply(
+        lambda r: meter_map.get((int(r["연"]), int(r["월"])), np.nan), axis=1)
+
+    # ── 1. 검증 상품 선택 + 학습 연도 선택 ──
+    c1, c2 = st.columns(2)
+    with c1:
+        sim_products = st.multiselect("검증 상품 선택", options=available_products,
+            default=["개별난방용"] if "개별난방용" in available_products else available_products[:1],
+            key="cool_sim_products")
+    with c2:
+        sim_train_years = st.multiselect("학습 연도 선택", options=years_all,
+            default=years_all[-3:] if len(years_all) >= 3 else years_all,
+            key="cool_sim_train_years")
+
+    # ── 2. 예측 대상 연도 (다중 선택) ──
+    max_y = max(years_all)
+    pred_year_options = list(range(max_y, max_y + 4))
+    sim_pred_years = st.multiselect(
+        "예측 대상 연도",
+        options=pred_year_options,
+        default=[max_y + 1] if max_y + 1 in pred_year_options else pred_year_options[:1],
+        key="cool_sim_pred_years_v2")
+
+    # ── 3. 기온 시나리오 선택 (간단 체크박스) ──
+    st.markdown('<div class="sub">🌡️ 기온 시나리오 선택</div>', unsafe_allow_html=True)
+    sim_temp_scenarios = st.multiselect(
+        "시나리오 선택",
+        options=["3년 평균", "Max,min제외", "전년도 기온", "이상기온제외", "추세반영기온"],
+        default=["3년 평균", "Max,min제외", "전년도 기온", "이상기온제외", "추세반영기온"],
+        key="cool_sim_temp_scenarios_v4")
+
+    # ── 4. 예측 모델 선택 ──
+    sim_model = st.selectbox(
+        "예측 모델 선택",
+        options=["Poly-3 단일", "분리·3차식", "분리·2차식"],
+        index=0,
+        key="cool_sim_model")
+
+    if not sim_products or not sim_train_years or not sim_temp_scenarios or not sim_pred_years:
+        st.warning("상품, 학습 연도, 기온 시나리오, 예측 연도를 모두 선택해주세요.")
+        st.stop()
+
+    train_data_sim = merged_cool[merged_cool["연"].isin(sim_train_years)]
+    # 검침기온이 있는 행만 학습에 사용
+    train_data_sim = train_data_sim.dropna(subset=["검침기온"])
+    if len(train_data_sim) < 12:
+        st.error("학습 데이터가 12건 미만입니다. 학습 연도를 추가해주세요."); st.stop()
+
+    x_train_sim = train_data_sim["검침기온"].values.astype(float)
+
+    # ── 2026 실적 가져오기 (사업계획 실적 추정 스프레드시트에서) ──
+    latest_actual_year = max(years_all)
+    plan_actuals, plan_err = load_sheet4_plan_actuals()
+    base_actual_totals = {}  # {상품: 연간합계}
+    base_actual_monthly = {}  # {상품: {월: 값}}
+    for prod in sim_products:
+        # 사업계획 실적 추정 스프레드시트에서 월별 데이터 가져오기
+        if plan_actuals and prod in plan_actuals:
+            monthly = plan_actuals[prod]
+            base_actual_monthly[prod] = monthly
+            base_actual_totals[prod] = sum(monthly.values())
+            continue
+        # 폴백: supply_df에서 가져오기
+        if prod in supply_df.columns:
+            _sup_tmp = supply_df[[prod]].copy()
+            _sup_tmp["연"] = _sup_tmp.index.year
+            _sup_tmp["월"] = _sup_tmp.index.month
+            _sup_year = _sup_tmp[_sup_tmp["연"] == latest_actual_year]
+            if not _sup_year.empty:
+                monthly = {}
+                for m in range(1, 13):
+                    row = _sup_year[_sup_year["월"] == m]
+                    if not row.empty and row[prod].values[0] > 0:
+                        monthly[m] = float(row[prod].values[0])
+                if monthly:
+                    base_actual_totals[prod] = sum(monthly.values())
+                    base_actual_monthly[prod] = monthly
+        # merged에서도 시도
+        if prod not in base_actual_totals:
+            actual_data = merged[(merged["연"] == latest_actual_year) & (merged[prod] > 0)]
+            if not actual_data.empty:
+                monthly = {}
+                for _, row in actual_data.iterrows():
+                    monthly[int(row["월"])] = float(row[prod])
+                base_actual_totals[prod] = sum(monthly.values())
+                base_actual_monthly[prod] = monthly
+
+    if st.button("🚀 시뮬레이션 실행", type="primary", key="cool_btn_sim_run"):
+        st.session_state["cool_sim_run"] = True
+
+    if st.session_state.get("cool_sim_run", False):
+        for prod in sim_products:
+            st.markdown(f'<div class="sub">📦 {prod}</div>', unsafe_allow_html=True)
+            y_train_sim = train_data_sim[prod].values.astype(float)
+
+            # 모델 학습 (검침기온 기반)
+            _, r2_train_sim, model_sim, poly_sim = fit_poly3(x_train_sim, y_train_sim, x_train_sim)
+
+            train_for_split_sim = train_data_sim[["검침기온", prod]].rename(
+                columns={"검침기온": "기온_split", prod: "공급량_split"})
+            models_split3, _, _ = fit_piecewise_seasonal_models(
+                train_for_split_sim, x_col="기온_split", y_col="공급량_split", degree=3)
+            models_split2, _, _ = fit_piecewise_seasonal_models(
+                train_for_split_sim, x_col="기온_split", y_col="공급량_split", degree=2)
+
+            has_split3 = models_split3["winter"] is not None and models_split3["summer"] is not None
+            has_split2 = models_split2["winter"] is not None and models_split2["summer"] is not None
+
+            has_base = prod in base_actual_totals
+            base_total = base_actual_totals.get(prod, 0)
+
+            # ── 과거 5년 실적 박스 ──
+            st.markdown(f"**📊 {prod} — 최근 5년 실적 (Y-1 대비)**")
+            past_yearly_totals = {}
+            if prod in supply_df.columns:
+                _sup_past = supply_df[[prod]].copy()
+                _sup_past["연"] = _sup_past.index.year
+                for y in sorted(years_all):
+                    yr_sum = _sup_past[_sup_past["연"] == y][prod].sum()
+                    if yr_sum > 0:
+                        past_yearly_totals[y] = int(yr_sum)
+            else:
+                for y in sorted(years_all):
+                    yr_data = merged[merged["연"] == y]
+                    yr_sum = yr_data[prod].sum()
+                    if yr_sum > 0:
+                        past_yearly_totals[y] = int(yr_sum)
+            # 최신 실적 연도(2026)는 SHEET4(사업계획 실적 추정)에서 가져온 값으로 덮어쓰기
+            if has_base and latest_actual_year in past_yearly_totals:
+                past_yearly_totals[latest_actual_year] = int(base_total)
+
+            # 최근 5년만 표시
+            past_5_years = sorted(past_yearly_totals.keys())[-5:]
+            if past_5_years:
+                past_box_cols = st.columns(len(past_5_years))
+                past_bg = ["#f1f5f9", "#e2e8f0", "#dbeafe", "#e0e7ff", "#ede9fe"]
+                past_bd = ["#94a3b8", "#64748b", "#3b82f6", "#6366f1", "#8b5cf6"]
+                past_tx = ["#334155", "#1e293b", "#1e40af", "#4338ca", "#5b21b6"]
+                for i, y in enumerate(past_5_years):
+                    ci = i % len(past_bg)
+                    total = past_yearly_totals[y]
+                    diff_html = ""
+                    prev_y = y - 1
+                    if prev_y in past_yearly_totals and past_yearly_totals[prev_y] > 0:
+                        prev_total = past_yearly_totals[prev_y]
+                        diff_val = total - prev_total
+                        ratio_val = (total / prev_total - 1) * 100
+                        diff_sign = "+" if diff_val >= 0 else ""
+                        ratio_sign = "+" if ratio_val >= 0 else ""
+                        diff_color = "#dc2626" if diff_val < 0 else "#166534"
+                        diff_html = (f'<div style="font-size:0.75rem; color:{diff_color}; margin-top:4px;">'
+                                     f'차이: {diff_sign}{diff_val:,.0f}<br>'
+                                     f'비율: {ratio_sign}{ratio_val:.1f}%</div>')
+                    past_box_cols[i].markdown(f"""
+<div style="background:{past_bg[ci]}; border-radius:8px; padding:12px 16px; text-align:center; border:2px solid {past_bd[ci]};">
+<div style="font-size:0.85rem; color:{past_tx[ci]}; font-weight:600;">{y} 실적</div>
+<div style="font-size:1.5rem; font-weight:700; color:#1f2937;">{total:,}</div>
+{diff_html}
+</div>""", unsafe_allow_html=True)
+                st.caption("※ Y-1(전년도) 대비 차이·비율 표시")
+
+            # ── 연도별 합산 비교표용 데이터 수집 ──
+            yearly_summary_rows = []
+            all_year_dfs_for_download = []  # 일괄 다운로드용
+            rolling_3yr_estimates = {}  # 롤링 3년평균용 누적 추정값
+
+            for sim_pred_year in sorted(sim_pred_years):
+                st.markdown(f"#### 📅 {sim_pred_year}년 예측")
+
+                # ── 기온 시나리오 계산 (검침기온 기반, 연도별, 롤링 3년평균) ──
+                all_scenarios = _compute_temp_scenarios(meter_temp_monthly, years_all, sim_pred_year,
+                                                        prev_3yr_estimates=rolling_3yr_estimates,
+                                                        temp_col="검침기온")
+                # 이번 연도의 3년평균 결과를 다음 연도 계산에 사용하도록 저장
+                if "3년 평균" in all_scenarios:
+                    rolling_3yr_estimates[sim_pred_year] = all_scenarios["3년 평균"]
+                selected_scenarios = {}
+                for ui_name in sim_temp_scenarios:
+                    if ui_name in all_scenarios:
+                        selected_scenarios[ui_name] = all_scenarios[ui_name]
+
+                # ── 기온실적 테이블 ──
+                with st.expander(f"📊 {sim_pred_year}년 검침기온 실적 및 시나리오 기온 테이블", expanded=False):
+                    temp_table_rows = []
+                    for y in sorted(years_all):
+                        if y < 2020:
+                            continue
+                        row_data = {"구분": str(y)}
+                        for m in range(1, 13):
+                            val = meter_temp_monthly[(meter_temp_monthly["연"] == y) & (meter_temp_monthly["월"] == m)]["검침기온"]
+                            row_data[f"{m}월"] = round(float(val.values[0]), 1) if not val.empty else None
+                        temp_table_rows.append(row_data)
+                    for sc_name, sc_temps in selected_scenarios.items():
+                        row_data = {"구분": sc_name}
+                        for m in range(1, 13):
+                            v = sc_temps.get(m, np.nan)
+                            row_data[f"{m}월"] = round(v, 1) if not np.isnan(v) else None
+                        temp_table_rows.append(row_data)
+                    temp_table_df = pd.DataFrame(temp_table_rows)
+                    _render_temp_table(temp_table_df, "구분")
+
+                # ── 시나리오별 예측 수행 ──
+                result_df = pd.DataFrame({"월": range(1, 13)})
+                result_df["Year_Month"] = result_df["월"].apply(lambda m: f"{sim_pred_year}-{m:02d}")
+
+                scenario_totals = {}  # {시나리오명: 연간합계}
+
+                for sc_name, sc_temps in selected_scenarios.items():
+                    temps_arr = np.array([sc_temps.get(m, np.nan) for m in range(1, 13)], dtype=float)
+                    result_df[f"{sc_name}\n기온"] = temps_arr
+
+                    if sim_model == "Poly-3 단일":
+                        y_pred_sim, _, _, _ = fit_poly3(x_train_sim, y_train_sim, temps_arr)
+                    elif sim_model == "분리·3차식" and has_split3:
+                        y_pred_sim = predict_piecewise_seasonal(models_split3, temps_arr)
+                    elif sim_model == "분리·2차식" and has_split2:
+                        y_pred_sim = predict_piecewise_seasonal(models_split2, temps_arr)
+                    else:
+                        y_pred_sim, _, _, _ = fit_poly3(x_train_sim, y_train_sim, temps_arr)
+
+                    y_pred_sim = np.clip(np.rint(y_pred_sim).astype(np.int64), 0, None)
+                    result_df[sc_name] = y_pred_sim
+                    scenario_totals[sc_name] = int(np.nansum(y_pred_sim))
+
+                # yearly summary row
+                yr_row = {"Year": sim_pred_year}
+                if has_base:
+                    yr_row[f"{latest_actual_year} 실적"] = base_total
+                for sc_name, sc_total in scenario_totals.items():
+                    yr_row[sc_name] = sc_total
+                yearly_summary_rows.append(yr_row)
+
+                # ── 숫자 박스 (연간 총량 + 실적 대비 차이/비율) ──
+                st.markdown(f"**📊 {sim_pred_year}년 검침기온 시나리오별 연간 총량 ({sim_model})**")
+                if has_base:
+                    st.caption(f"※ {latest_actual_year}년 실적 대비 차이·비율 표시")
+
+                n_boxes = len(scenario_totals) + (1 if has_base else 0)
+                box_cols = st.columns(n_boxes)
+                col_idx = 0
+
+                # 실적 박스
+                if has_base:
+                    box_cols[col_idx].markdown(f"""
+<div style="background:#dbeafe; border-radius:8px; padding:12px 16px; text-align:center; border:2px solid #3b82f6;">
+<div style="font-size:0.85rem; color:#1e40af; font-weight:600;">{latest_actual_year} 실적</div>
+<div style="font-size:1.5rem; font-weight:700; color:#1e3a5f;">{base_total:,.0f}</div>
+</div>""", unsafe_allow_html=True)
+                    col_idx += 1
+
+                # 시나리오 박스
+                sc_colors = ["#f0fdf4", "#fef3c7", "#fce7f3", "#ede9fe", "#e0f2fe"]
+                sc_borders = ["#22c55e", "#f59e0b", "#ec4899", "#8b5cf6", "#0ea5e9"]
+                sc_text_colors = ["#166534", "#92400e", "#9d174d", "#5b21b6", "#0c4a6e"]
+                for i, (sc_name, total) in enumerate(scenario_totals.items()):
+                    ci = i % len(sc_colors)
+                    # 차이/비율 계산
+                    diff_html = ""
+                    if has_base and base_total > 0:
+                        diff_val = total - base_total
+                        ratio_val = (total / base_total - 1) * 100
+                        diff_sign = "+" if diff_val >= 0 else ""
+                        ratio_sign = "+" if ratio_val >= 0 else ""
+                        diff_color = "#dc2626" if diff_val < 0 else "#166534"
+                        diff_html = (f'<div style="font-size:0.75rem; color:{diff_color}; margin-top:4px;">'
+                                     f'차이: {diff_sign}{diff_val:,.0f}<br>'
+                                     f'비율: {ratio_sign}{ratio_val:.1f}%</div>')
+
+                    box_cols[col_idx].markdown(f"""
+<div style="background:{sc_colors[ci]}; border-radius:8px; padding:12px 16px; text-align:center; border:2px solid {sc_borders[ci]};">
+<div style="font-size:0.85rem; color:{sc_text_colors[ci]}; font-weight:600;">{sc_name}</div>
+<div style="font-size:1.5rem; font-weight:700; color:#1f2937;">{total:,}</div>
+{diff_html}
+</div>""", unsafe_allow_html=True)
+                    col_idx += 1
+
+                # ── 그래프 ──
+                chart_cols = list(scenario_totals.keys())
+
+                # 실적 연도 데이터도 그래프에 표시
+                actual_year_data = merged[merged["연"] == sim_pred_year]
+                has_actual_chart = False
+                if not actual_year_data.empty and prod in actual_year_data.columns:
+                    act_vals = []
+                    for m in range(1, 13):
+                        row = actual_year_data[actual_year_data["월"] == m]
+                        if not row.empty and row[prod].values[0] > 0:
+                            act_vals.append(float(row[prod].values[0]))
+                        else:
+                            act_vals.append(np.nan)
+                    if any(not np.isnan(v) for v in act_vals):
+                        result_df[f"{sim_pred_year} 실적"] = act_vals
+                        chart_cols.insert(0, f"{sim_pred_year} 실적")
+                        has_actual_chart = True
+
+                # 실적도 그래프에 추가 (예측 연도 != 실적 연도일 때)
+                if has_base and sim_pred_year != latest_actual_year and prod in base_actual_monthly:
+                    base_vals = [base_actual_monthly[prod].get(m, np.nan) for m in range(1, 13)]
+                    result_df[f"{latest_actual_year} 실적"] = base_vals
+                    chart_cols.insert(0, f"{latest_actual_year} 실적")
+
+                sim_line_colors = {}
+                sim_line_colors[f"{latest_actual_year} 실적"] = "#1e3a8a"
+                sim_line_colors[f"{sim_pred_year} 실적"] = "#64748b"
+                palette = ["#22c55e", "#f59e0b", "#ec4899", "#8b5cf6", "#0ea5e9"]
+                for i, sc_name in enumerate(scenario_totals.keys()):
+                    sim_line_colors[sc_name] = palette[i % len(palette)]
+
+                fig_sim = go.Figure()
+                for col_name in chart_cols:
+                    if col_name not in result_df.columns:
+                        continue
+                    is_actual = "실적" in col_name
+                    fig_sim.add_trace(go.Scatter(
+                        x=result_df["Year_Month"], y=result_df[col_name],
+                        mode="lines+markers", name=col_name,
+                        line=dict(color=sim_line_colors.get(col_name), width=2.5,
+                                  dash="solid" if is_actual else None),
+                        marker=dict(size=6),
+                        hovertemplate="%{x}<br>" + col_name + ": %{y:,.0f}<extra></extra>",
+                    ))
+                fig_sim.update_layout(**CHART_LAYOUT)
+                fig_sim.update_layout(
+                    title=f"{prod} — {sim_pred_year}년 검침기온 시나리오별 예측 ({sim_model})",
+                    yaxis_title="공급량 (MJ)", yaxis_rangemode="tozero",
+                    margin=dict(t=50, b=70), height=450)
+                st.plotly_chart(fig_sim, use_container_width=True, config=dict(displaylogo=False))
+
+                # ── 월별 시나리오 ──
+                actual_col_name = f"{latest_actual_year} 실적"
+                st.markdown("**🗂️ 월별 시나리오**")
+                diff_df_sim = result_df[["Year_Month"]].copy()
+                if has_base and sim_pred_year != latest_actual_year:
+                    diff_df_sim[actual_col_name] = result_df.get(f"{latest_actual_year} 실적", np.nan)
+                if has_actual_chart:
+                    diff_df_sim[f"{sim_pred_year} 실적"] = result_df[f"{sim_pred_year} 실적"]
+                for sc_name in scenario_totals.keys():
+                    diff_df_sim[sc_name] = result_df[sc_name]
+
+                render_html_diff_table(diff_df_sim, "Year_Month",
+                                       target_col=actual_col_name if has_base else None)
+
+                # ── 다운로드 ──
+                csv_sim = diff_df_sim.to_csv(index=False).encode("utf-8-sig")
+                st.download_button(f"📥 {prod} {sim_pred_year}년 냉방용 시뮬레이션 결과 다운로드", data=csv_sim,
+                                   file_name=f"냉방용_시뮬레이션_{prod}_{sim_pred_year}.csv",
+                                   mime="text/csv", key=f"cool_dl_sim_{prod}_{sim_pred_year}")
+                # 일괄 다운로드용 수집
+                all_year_dfs_for_download.append(diff_df_sim.copy())
+
+                st.markdown("---")
+
+            # ── 연도별 시나리오 합산 (모든 예측 연도 한눈에) ──
+            if len(yearly_summary_rows) > 1:
+                st.markdown("**📊 연도별 시나리오 합산 비교**")
+                yearly_out = pd.DataFrame(yearly_summary_rows)
+                actual_col_name = f"{latest_actual_year} 실적"
+                render_html_diff_table(yearly_out, "Year",
+                                       target_col=actual_col_name if has_base else None)
+
+            # ── 일괄 다운로드 (모든 예측 연도 통합) ──
+            if all_year_dfs_for_download:
+                combined_df = pd.concat(all_year_dfs_for_download, ignore_index=True)
+                pred_years_str = "_".join(str(y) for y in sorted(sim_pred_years))
+
+                dl_c1, dl_c2 = st.columns(2)
+                with dl_c1:
+                    csv_all = combined_df.to_csv(index=False).encode("utf-8-sig")
+                    st.download_button(
+                        f"📥 {prod} 전체 연도 냉방용 시뮬레이션 일괄 다운로드 (CSV)",
+                        data=csv_all,
+                        file_name=f"냉방용_시뮬레이션_{prod}_{pred_years_str}_전체.csv",
+                        mime="text/csv",
+                        key=f"cool_dl_sim_all_csv_{prod}")
+                with dl_c2:
+                    buf_xl = BytesIO()
+                    with pd.ExcelWriter(buf_xl, engine="openpyxl") as writer:
+                        for i, yr_df in enumerate(all_year_dfs_for_download):
+                            yr_label = sorted(sim_pred_years)[i] if i < len(sim_pred_years) else f"sheet{i}"
+                            yr_df.to_excel(writer, sheet_name=str(yr_label), index=False)
+                        if len(yearly_summary_rows) > 1:
+                            pd.DataFrame(yearly_summary_rows).to_excel(
+                                writer, sheet_name="연도별합산", index=False)
+                    st.download_button(
+                        f"📥 {prod} 전체 연도 냉방용 시뮬레이션 일괄 다운로드 (Excel)",
+                        data=buf_xl.getvalue(),
+                        file_name=f"냉방용_시뮬레이션_{prod}_{pred_years_str}_전체.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key=f"cool_dl_sim_all_xlsx_{prod}")
+
+            st.markdown("---")
+
+
 # ══════════════════════════════════════════════
 # 메인
 # ══════════════════════════════════════════════
@@ -2490,6 +2899,7 @@ def main():
         st.stop()
 
     temp_monthly = get_monthly_avg_temp(temp_daily)
+    meter_temp_monthly = get_cooling_period_temp(temp_daily)
     merged = merge_supply_and_temp(supply_df, temp_monthly)
 
     if merged.empty:
@@ -2508,6 +2918,7 @@ def main():
             "🧊 판매량 예측 (냉방용)",
             "⚖️ 판매량 vs 공급량",
             "🔬 개별난방용 Simulation",
+            "🧊 냉방용 Simulation",
         ]
         selected_menu = st.radio(
             "분석 메뉴", options=menu_options,
@@ -3526,6 +3937,10 @@ def main():
     # ═══ TAB 6: 개별난방용 Simulation ═══
     elif selected_menu == menu_options[5]:
         render_simulation_tab(merged, temp_monthly, supply_df, available_products, years_all)
+
+    # ═══ TAB 7: 냉방용 Simulation ═══
+    elif selected_menu == menu_options[6]:
+        render_cooling_simulation_tab(merged, meter_temp_monthly, temp_monthly, supply_df, available_products, years_all)
 
 
 def _parse_uploaded_temp(uploaded_file):
