@@ -2955,19 +2955,19 @@ def main():
         with st.expander("📎 데이터 출처", expanded=False):
             st.markdown(f"""
 **Sheet1 — 공급량 실적**
-`{SHEET1_ID}`
+[스프레드시트 링크](https://docs.google.com/spreadsheets/d/{SHEET1_ID})
 C~O열: 상품별 월별 공급량(MJ)
 
 **Sheet2 — 일별 기온**
-`{SHEET2_ID}`
+[스프레드시트 링크](https://docs.google.com/spreadsheets/d/{SHEET2_ID})
 평균기온 열 → 월평균기온 / 검침기온(전월16~당월15일) 계산
 
 **Sheet3 — 판매량 실적**
-`{SHEET3_ID}`
+[스프레드시트 링크](https://docs.google.com/spreadsheets/d/{SHEET3_ID})
 상품별 월별 판매량(MJ)
 
 **Sheet4 — 사업계획 실적 추정(2026)**
-`{SHEET4_ID}`
+[스프레드시트 링크](https://docs.google.com/spreadsheets/d/{SHEET4_ID})
 D~O열: 상품별 1~12월 실적 추정값
             """.strip())
 
