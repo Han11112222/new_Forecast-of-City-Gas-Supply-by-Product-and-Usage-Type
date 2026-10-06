@@ -2952,6 +2952,25 @@ def main():
                 st.success(f"✅ 판매량 ({len(sales_df)}개월)")
             st.caption(f"데이터 기간: {min(years_all)}~{max(years_all)}년 · 월 데이터 {len(merged)}건")
 
+        with st.expander("📎 데이터 출처", expanded=False):
+            st.markdown(f"""
+**Sheet1 — 공급량 실적**
+`{SHEET1_ID}`
+C~O열: 상품별 월별 공급량(MJ)
+
+**Sheet2 — 일별 기온**
+`{SHEET2_ID}`
+평균기온 열 → 월평균기온 / 검침기온(전월16~당월15일) 계산
+
+**Sheet3 — 판매량 실적**
+`{SHEET3_ID}`
+상품별 월별 판매량(MJ)
+
+**Sheet4 — 사업계획 실적 추정(2026)**
+`{SHEET4_ID}`
+D~O열: 상품별 1~12월 실적 추정값
+            """.strip())
+
     # ═══ TAB 1: 학습 기간 추천 ═══
     if selected_menu == menu_options[0]:
         st.markdown("### 🎯 학습 기간 추천")
