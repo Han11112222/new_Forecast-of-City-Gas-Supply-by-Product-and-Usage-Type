@@ -24,11 +24,14 @@ SHEET1_ID = "1gIhArPlLBJ9fwlaqXtZWxiKlSK9hbRuz6HcDw_Yf7Is"   # 상품별 공급�
 SHEET2_ID = "13HrIz6OytYDykXeXzXJ02I6XbaKin1YaKBoO2kBd6Bs"   # 일별 기온/공급량
 SHEET3_ID = "1-8RIPIkjnVXxoh5QJs6598nnHkWOGmrO655jr3b3g04"   # 상품별 판매량 실적
 SHEET4_ID = "1a_3OgmZxJvKw2GxsH_QIXdGNqWcwgpZPb2sKUQAI0vE"   # 사업계획 실적 추정(2026년)
+SUPPLY_PLAN_SHEET_ID = "1PSzKts5lL_zNNi_vfKlW1CdNZasTA-jBj_UCNEtu-x0"   # 상품별공급량계획 (2026 추정실적 포함)
 
 SHEET1_URL = f"https://docs.google.com/spreadsheets/d/{SHEET1_ID}/export?format=csv&gid=0"
 SHEET2_URL = f"https://docs.google.com/spreadsheets/d/{SHEET2_ID}/export?format=csv&gid=0"
 SHEET3_URL = f"https://docs.google.com/spreadsheets/d/{SHEET3_ID}/export?format=csv&gid=0"
 SHEET4_URL = f"https://docs.google.com/spreadsheets/d/{SHEET4_ID}/export?format=csv&gid=0"
+SUPPLY_PLAN_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SUPPLY_PLAN_SHEET_ID}/export?format=csv&gid=0"
+SUPPLY_PLAN_UNIT_TO_MJ = 1000  # 상품별공급량계획 시트 단위: GJ → MJ 변환
 
 # ── 상품 목록 (Sheet 1 기준) ──
 HOUSING_PRODUCTS = ["취사용", "개별난방용", "중앙난방용", "자가열전용"]
@@ -291,6 +294,117 @@ def load_sheet4_plan_actuals():
                         pass
         if monthly:
             result[prod_name] = monthly
+    return result, None
+
+
+@st.cache_data(ttl=1800)
+def load_plan_actual_est_2026():
+    """상품별공급량계획 스프레드시트에서 '4. 2026년 추정실적' 섹션의 월별 데이터 로드
+    구조: A열=그룹(병합셀), B열=상품명, C~N열=1~12월 (단위 GJ → ×1000 → MJ)
+    반환: {상품명: {월: 값(MJ)}}, 에러메시지
+    """
+    try:
+        resp = requests.get(SUPPLY_PLAN_SHEET_URL, timeout=30)
+        resp.raise_for_status()
+        raw = pd.read_csv(StringIO(resp.text), header=None, dtype=str, keep_default_na=False)
+    except Exception as e:
+        return None, f"상품별공급량계획 시트 로드 실패: {e}"
+
+    # '2026년 추정실적' 섹션 찾기 — 마지막(가장 아래) 매치 사용
+    start_idx = None
+    for i in range(len(raw)):
+        found = False
+        for j in range(min(5, raw.shape[1])):
+            cell = str(raw.iat[i, j])
+            if "2026" in cell and "추정실적" in cell:
+                found = True
+                break
+        if not found:
+            row_text = " ".join(str(raw.iat[i, j]) for j in range(min(5, raw.shape[1])))
+            if "2026" in row_text and "추정실적" in row_text:
+                found = True
+        if found:
+            start_idx = i
+
+    if start_idx is None:
+        return None, "'2026년 추정실적' 섹션을 찾을 수 없습니다."
+
+    # '구분' 헤더 행 찾기 (start_idx 이후 5행 이내, A열 또는 B열)
+    header_idx = start_idx
+    for i in range(start_idx, min(start_idx + 5, len(raw))):
+        col_a = str(raw.iat[i, 0]).strip()
+        col_b = str(raw.iat[i, 1]).strip() if raw.shape[1] > 1 else ""
+        if col_b == "구분" or col_a == "구분":
+            header_idx = i
+            break
+
+    # 데이터 행: header_idx+1 부터 '합계' 행까지
+    # A열(col0)=그룹(병합셀), B열(col1)=상품명, C~N열(col2~col13)=1~12월
+    result = {}
+    for i in range(header_idx + 1, len(raw)):
+        col_a = str(raw.iat[i, 0]).strip()
+        prod_name = str(raw.iat[i, 1]).strip() if raw.shape[1] > 1 else ""
+
+        # 합계 행 감지
+        if col_a == "합계" or prod_name == "합계":
+            break
+        if not prod_name and not col_a:
+            continue
+        # 소계 행 스킵
+        if col_a == "소계" or prod_name == "소계":
+            continue
+
+        if not prod_name:
+            # 독립 상품(산업용, 열병합용, 연료전지 등)은 A열에만 이름이 있고 B열이 비어있음
+            prod_name = col_a
+
+        # 상품명에서 "용" 뒤의 숫자 제거 (일반용1 → 일반용 등은 그대로 유지)
+        # 소계/합계가 아닌 빈 행 스킵
+        if not prod_name:
+            continue
+
+        monthly = {}
+        for m in range(1, 13):
+            col_idx = m + 1  # col2=C=1월, col3=D=2월, ..., col13=N=12월
+            if col_idx < raw.shape[1]:
+                val_str = str(raw.iat[i, col_idx]).replace(",", "").strip()
+                try:
+                    val = float(val_str)
+                    if val != 0:
+                        monthly[m] = val * SUPPLY_PLAN_UNIT_TO_MJ  # GJ → MJ
+                except ValueError:
+                    pass
+
+        if monthly:
+            # 상품명 정규화: forecast_app.py의 상품명과 매칭
+            # 스프레드시트: "개별난방" → forecast_app: "개별난방용"
+            name_map = {
+                "취사": "취사용",
+                "개별난방": "개별난방용",
+                "중앙난방": "중앙난방용",
+                "업무난방": "업무난방용",
+                "냉난방": "냉난방공조용",
+                "냉방": "냉난방공조용",
+                "연료전지": "연료전지용",
+                "CNG": "수송용",
+                "BIO": "수송용",
+            }
+            # "일반용1", "일반용2" 등 → "일반용"
+            if prod_name.startswith("일반용"):
+                mapped = "일반용"
+            else:
+                mapped = name_map.get(prod_name, prod_name)
+                # "용"이 이미 붙어있는 경우 그대로 사용
+                if prod_name.endswith("용") and prod_name not in name_map:
+                    mapped = prod_name
+
+            # 같은 상품명으로 매핑되는 경우 월별 합산 (CNG+BIO → 수송용, 일반용1+일반용2 → 일반용)
+            if mapped in result:
+                for m, v in monthly.items():
+                    result[mapped][m] = result[mapped].get(m, 0) + v
+            else:
+                result[mapped] = monthly
+
     return result, None
 
 
@@ -2131,13 +2245,13 @@ def render_simulation_tab(merged, temp_monthly, supply_df, available_products, y
 
     x_train_sim = train_data_sim["월평균기온"].values.astype(float)
 
-    # ── 2026 실적 가져오기 (사업계획 실적 추정 스프레드시트에서) ──
+    # ── 2026 실적 가져오기 (상품별공급량계획 스프레드시트 '4. 2026년 추정실적'에서) ──
     latest_actual_year = max(years_all)
-    plan_actuals, plan_err = load_sheet4_plan_actuals()
+    plan_actuals, plan_err = load_plan_actual_est_2026()
     base_actual_totals = {}  # {상품: 연간합계}
     base_actual_monthly = {}  # {상품: {월: 값}}
     for prod in sim_products:
-        # 사업계획 실적 추정 스프레드시트에서 월별 데이터 가져오기
+        # 상품별공급량계획 스프레드시트에서 월별 데이터 가져오기
         if plan_actuals and prod in plan_actuals:
             monthly = plan_actuals[prod]
             base_actual_monthly[prod] = monthly
