@@ -133,6 +133,15 @@ CHART_LAYOUT = dict(
 # 데이터 로드 함수
 # ══════════════════════════════════════════════
 
+DEFAULT_TRAIN_YEAR_MIN, DEFAULT_TRAIN_YEAR_MAX = 2019, 2025
+
+def default_train_years(years):
+    """학습 연도 multiselect 공통 기본값: 2019~2025년 (해당 연도가 없으면 최근 3개년)."""
+    ys = [y for y in years if DEFAULT_TRAIN_YEAR_MIN <= y <= DEFAULT_TRAIN_YEAR_MAX]
+    if ys: return ys
+    return list(years[-3:]) if len(years) >= 3 else list(years)
+
+
 def _find_row_containing(raw, text_variants, search_cols=(0, 1, 2, 3)):
     """raw(DataFrame, header=None)에서 텍스트 포함 행 찾기"""
     max_col = min(raw.shape[1], max(search_cols) + 1)
@@ -1277,7 +1286,7 @@ def render_cooling_analysis():
     st.sidebar.markdown("**🧊 냉방용 분석 설정**")
     train_years_c = st.sidebar.multiselect(
         "1. AI 학습 연도 선택 (냉방용)", options=all_years_cool,
-        default=all_years_cool, key="cool_train_years")
+        default=default_train_years(all_years_cool), key="cool_train_years")
     eval_years_c = st.sidebar.multiselect(
         "2. 과거 적합도 검증 연도 (냉방용)", options=all_years_cool,
         default=all_years_cool[-2:], key="cool_eval_years")
@@ -2208,7 +2217,7 @@ def render_simulation_tab(merged, temp_monthly, supply_df, available_products, y
             key="sim_products")
     with c2:
         sim_train_years = st.multiselect("학습 연도 선택", options=years_all,
-            default=years_all[-3:] if len(years_all) >= 3 else years_all,
+            default=default_train_years(years_all),
             key="sim_train_years")
 
     # ── 2. 예측 대상 연도 (다중 선택) ──
@@ -2614,7 +2623,7 @@ def render_cooling_simulation_tab(merged, meter_temp_monthly, temp_monthly, supp
             key="cool_sim_products")
     with c2:
         sim_train_years = st.multiselect("학습 연도 선택", options=years_all,
-            default=years_all[-3:] if len(years_all) >= 3 else years_all,
+            default=default_train_years(years_all),
             key="cool_sim_train_years")
 
     # ── 2. 예측 대상 연도 (다중 선택) ──
@@ -3217,9 +3226,8 @@ D~O열: 상품별 1~12월 실적 추정값
                 default=["개별난방용"] if "개별난방용" in available_products else available_products[:1],
                 key="vf_products")
         with c2:
-            _vf_default_years = [y for y in years_all if 2019 <= y <= 2025]
             vf_train_years = st.multiselect("학습 연도 선택", options=years_all,
-                default=_vf_default_years if _vf_default_years else (years_all[-3:] if len(years_all) >= 3 else years_all),
+                default=default_train_years(years_all),
                 key="vf_train_years")
 
         vf_eval_years = st.multiselect(
@@ -3895,7 +3903,7 @@ D~O열: 상품별 1~12월 실적 추정값
                 key="pred_products")
         with c2:
             train_years = st.multiselect("학습 연도 선택", options=years_all,
-                default=years_all[-3:] if len(years_all) >= 3 else years_all,
+                default=default_train_years(years_all),
                 key="train_years")
 
         st.caption("👆 학습 연도: Poly-3 모델(기온↔공급량 관계식)을 학습할 때 사용할 연도")
