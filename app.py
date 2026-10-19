@@ -3217,8 +3217,9 @@ D~O열: 상품별 1~12월 실적 추정값
                 default=["개별난방용"] if "개별난방용" in available_products else available_products[:1],
                 key="vf_products")
         with c2:
+            _vf_default_years = [y for y in years_all if 2019 <= y <= 2025]
             vf_train_years = st.multiselect("학습 연도 선택", options=years_all,
-                default=years_all[-3:] if len(years_all) >= 3 else years_all,
+                default=_vf_default_years if _vf_default_years else (years_all[-3:] if len(years_all) >= 3 else years_all),
                 key="vf_train_years")
 
         vf_eval_years = st.multiselect(
