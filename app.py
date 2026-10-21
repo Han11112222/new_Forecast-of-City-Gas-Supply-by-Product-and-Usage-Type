@@ -674,6 +674,79 @@ def _make_scatter_chart(x_train, y_train, title, xlab, ylab, r2):
     return fig
 
 
+def _poly3_eq_T(model):
+    """Poly-3 모델 식을 'y = a·T³ - b·T² - c·T + d' 형태로 (천단위 콤마, 소수 1자리)."""
+    c1, c2, c3 = model.coef_[0], model.coef_[1], model.coef_[2]
+    d = model.intercept_
+    eq = f"y = {'-' if c3 < 0 else ''}{abs(c3):,.1f}·T³"
+    for v, sfx in ((c2, "·T²"), (c1, "·T"), (d, "")):
+        eq += f" {'-' if v < 0 else '+'} {abs(v):,.1f}{sfx}"
+    return eq
+
+
+def make_temp_supply_corr_chart(x, y, xlab="기온(℃)", ylab="공급량(MJ)", ci_level=0.90, height=460):
+    """
+    기온–공급량 상관 산점도 + Poly-3 회귀선 + 신뢰구간(기본 90%) 밴드.
+    신뢰구간은 회귀선(평균 예측값)의 구간: se = sqrt(s² · x0ᵀ(XᵀX)⁻¹x0), t분포 사용.
+    반환: (fig, r2, 식 문자열)
+    """
+    m = (~np.isnan(x)) & (~np.isnan(y))
+    xv, yv = np.asarray(x, float)[m], np.asarray(y, float)[m]
+    if len(xv) < 5:
+        return None, np.nan, ""
+    poly = PolynomialFeatures(degree=3, include_bias=False)
+    X = poly.fit_transform(xv.reshape(-1, 1))
+    model = LinearRegression().fit(X, yv)
+    r2 = model.score(X, yv)
+
+    xx = np.linspace(xv.min(), xv.max(), 200)
+    XX = poly.transform(xx.reshape(-1, 1))
+    yy = model.predict(XX)
+
+    # 회귀선 신뢰구간 (OLS)
+    n, k = X.shape[0], X.shape[1] + 1
+    Xd = np.column_stack([np.ones(n), X])
+    XXd = np.column_stack([np.ones(len(xx)), XX])
+    resid = yv - model.predict(X)
+    dof = max(n - k, 1)
+    s2 = float(resid @ resid) / dof
+    try:
+        from scipy.stats import t as _t
+        tval = float(_t.ppf(0.5 + ci_level / 2, dof))
+    except Exception:
+        tval = 1.645 if ci_level == 0.90 else 1.96
+    cov = np.linalg.pinv(Xd.T @ Xd)
+    se = np.sqrt(np.maximum(np.einsum("ij,jk,ik->i", XXd, cov, XXd) * s2, 0))
+    lo, hi = yy - tval * se, yy + tval * se
+
+    ci_txt = f"{int(round(ci_level * 100))}% CI"
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=xv, y=yv, mode="markers", name="샘플",
+        marker=dict(size=7, opacity=0.6, color="#2f6fa8"),
+        hovertemplate=f"{xlab}=%{{x:.1f}}<br>{ylab}=%{{y:,.0f}}<extra></extra>"))
+    fig.add_trace(go.Scatter(
+        x=np.concatenate([xx, xx[::-1]]), y=np.concatenate([hi, lo[::-1]]),
+        fill="toself", fillcolor="rgba(147,197,253,0.35)", line=dict(width=0),
+        name=ci_txt, hoverinfo="skip"))
+    fig.add_trace(go.Scatter(
+        x=xx, y=yy, mode="lines", name="Poly-3",
+        line=dict(color="#2ca02c", width=3),
+        hovertemplate=f"{xlab}=%{{x:.1f}}<br>Poly-3=%{{y:,.0f}}<extra></extra>"))
+    fig.update_layout(
+        height=height, plot_bgcolor="white", paper_bgcolor="white",
+        margin=dict(t=20, b=60, l=20, r=20),
+        xaxis=dict(title=xlab, showline=True, linecolor="#333", zeroline=False,
+                   gridcolor="rgba(0,0,0,0)", ticks="outside"),
+        yaxis=dict(title=dict(text=ylab, standoff=12), tickformat=",", automargin=True,
+                   showline=True, linecolor="#333",
+                   zeroline=False, gridcolor="rgba(0,0,0,0)", rangemode="tozero", ticks="outside"),
+        legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.01, font=dict(size=12)),
+        hovermode="closest",
+    )
+    return fig, r2, _poly3_eq_T(model)
+
+
 def _make_line_chart(traces_data, title, xlab, ylab, height=420):
     fig = go.Figure()
     for t in traces_data:
@@ -3258,6 +3331,23 @@ D~O열: 상품별 1~12월 실적 추정값
         naive_by_product = {}
         for prod in vf_products:
             naive_by_product[prod] = train_data_vf.groupby("월")[prod].mean()
+
+        # ── A. 기온–공급량 상관 (Poly-3, 90% CI) — 학습 데이터 기준 ──
+        st.markdown("---")
+        st.markdown("### 🧮 A. 기온–공급량 상관 (Poly-3, 90% CI)")
+        st.caption(f"학습 연도 {min(vf_train_years)}~{max(vf_train_years)}년 · 월별 데이터 "
+                   f"(월평균기온 vs 월 공급량) · 음영 = Poly-3 회귀선의 90% 신뢰구간".replace("~", "\\~"))
+        for prod in vf_products:
+            fig_corr, r2_corr, eq_corr = make_temp_supply_corr_chart(
+                x_train_vf, train_data_vf[prod].values.astype(float))
+            if fig_corr is None:
+                st.info(f"{prod}: 상관 그래프를 그릴 학습 데이터가 부족합니다.")
+                continue
+            if len(vf_products) > 1:
+                st.markdown(f'<div class="sub">📦 {prod}</div>', unsafe_allow_html=True)
+            st.markdown(f"**R²={r2_corr:.3f} · 식: {eq_corr}**")
+            st.plotly_chart(fig_corr, use_container_width=True,
+                            config=dict(displaylogo=False), key=f"vf_corr_{prod}")
 
         st.markdown("---")
         st.markdown(f"""
