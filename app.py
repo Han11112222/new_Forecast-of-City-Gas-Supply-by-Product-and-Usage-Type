@@ -756,6 +756,7 @@ def make_temp_supply_corr_chart(x, y, xlab="기온(℃)", ylab="공급량(MJ)", 
                    zeroline=False, gridcolor="rgba(0,0,0,0)", rangemode="tozero", ticks="outside"),
         legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.01, font=dict(size=12)),
         hovermode="closest",
+        dragmode="pan",   # 휠 확대 후 드래그로 이동
     )
     return fig, r2, _poly3_eq_T(model)
 
@@ -3362,8 +3363,11 @@ D~O열: 상품별 1~12월 실적 추정값
             else:
                 _d0, _d1 = daily_corr["일자"].min(), daily_corr["일자"].max()
                 st.markdown(f"**R²={r2_corr:.3f} · 식: {eq_corr}**")
+                # 마우스 휠로 확대/축소, 드래그로 이동, 더블클릭으로 원래 크기
                 st.plotly_chart(fig_corr, use_container_width=True,
-                                config=dict(displaylogo=False), key="vf_corr_daily")
+                                config=dict(scrollZoom=True, displaylogo=False, doubleClick="reset"),
+                                key="vf_corr_daily")
+                st.caption("🖱️ 그래프 위에서 마우스 휠: 확대/축소 · 드래그: 이동 · 더블클릭: 원래 크기")
                 st.caption(md_safe_corr(
                     f"일일 총공급량(MJ) vs 일평균기온 · 학습 연도 {fmt_years_corr(vf_train_years)} "
                     f"({_d0:%Y-%m-%d}~{_d1:%Y-%m-%d}, {len(daily_corr):,}일) · "
