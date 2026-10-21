@@ -684,7 +684,20 @@ def _poly3_eq_T(model):
     return eq
 
 
-def make_temp_supply_corr_chart(x, y, xlab="기온(℃)", ylab="공급량(MJ)", ci_level=0.90, height=460):
+def md_safe_corr(text):
+    """Streamlit 마크다운에서 '~' 두 개 사이가 취소선이 되지 않도록 이스케이프."""
+    return str(text).replace("~", "\\~")
+
+
+def fmt_years_corr(years):
+    ys = sorted(int(y) for y in years)
+    if len(ys) > 1 and ys == list(range(ys[0], ys[-1] + 1)):
+        return f"{ys[0]}~{ys[-1]}년"
+    return "·".join(str(y) for y in ys) + "년"
+
+
+def make_temp_supply_corr_chart(x, y, xlab="기온(℃)", ylab="공급량(MJ)", ci_level=0.90, height=460,
+                                marker_size=7):
     """
     기온–공급량 상관 산점도 + Poly-3 회귀선 + 신뢰구간(기본 90%) 밴드.
     신뢰구간은 회귀선(평균 예측값)의 구간: se = sqrt(s² · x0ᵀ(XᵀX)⁻¹x0), t분포 사용.
@@ -723,7 +736,7 @@ def make_temp_supply_corr_chart(x, y, xlab="기온(℃)", ylab="공급량(MJ)", 
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=xv, y=yv, mode="markers", name="샘플",
-        marker=dict(size=7, opacity=0.6, color="#2f6fa8"),
+        marker=dict(size=marker_size, opacity=0.55, color="#2f6fa8"),
         hovertemplate=f"{xlab}=%{{x:.1f}}<br>{ylab}=%{{y:,.0f}}<extra></extra>"))
     fig.add_trace(go.Scatter(
         x=np.concatenate([xx, xx[::-1]]), y=np.concatenate([hi, lo[::-1]]),
@@ -3332,22 +3345,29 @@ D~O열: 상품별 1~12월 실적 추정값
         for prod in vf_products:
             naive_by_product[prod] = train_data_vf.groupby("월")[prod].mean()
 
-        # ── A. 기온–공급량 상관 (Poly-3, 90% CI) — 학습 데이터 기준 ──
+        # ── A. 기온–공급량 상관 (Poly-3, 90% CI) — 일별 데이터 (Sheet 2: 일자·공급량(MJ)·평균기온) ──
         st.markdown("---")
         st.markdown("### 🧮 A. 기온–공급량 상관 (Poly-3, 90% CI)")
-        st.caption(f"학습 연도 {min(vf_train_years)}~{max(vf_train_years)}년 · 월별 데이터 "
-                   f"(월평균기온 vs 월 공급량) · 음영 = Poly-3 회귀선의 90% 신뢰구간".replace("~", "\\~"))
-        for prod in vf_products:
+        if temp_daily is None or "공급량_MJ" not in temp_daily.columns:
+            st.info("일별 공급량 데이터(Sheet 2 '공급량(MJ)' 열)를 불러오지 못해 상관 그래프를 표시할 수 없습니다.")
+        else:
+            daily_corr = temp_daily[temp_daily["연"].isin(vf_train_years)]
+            daily_corr = daily_corr[daily_corr["공급량_MJ"].notna() & (daily_corr["공급량_MJ"] > 0)
+                                    & daily_corr["평균기온"].notna()]
             fig_corr, r2_corr, eq_corr = make_temp_supply_corr_chart(
-                x_train_vf, train_data_vf[prod].values.astype(float))
+                daily_corr["평균기온"].values.astype(float),
+                daily_corr["공급량_MJ"].values.astype(float), marker_size=5)
             if fig_corr is None:
-                st.info(f"{prod}: 상관 그래프를 그릴 학습 데이터가 부족합니다.")
-                continue
-            if len(vf_products) > 1:
-                st.markdown(f'<div class="sub">📦 {prod}</div>', unsafe_allow_html=True)
-            st.markdown(f"**R²={r2_corr:.3f} · 식: {eq_corr}**")
-            st.plotly_chart(fig_corr, use_container_width=True,
-                            config=dict(displaylogo=False), key=f"vf_corr_{prod}")
+                st.info("선택한 학습 연도에 일별 공급량 데이터가 부족합니다.")
+            else:
+                _d0, _d1 = daily_corr["일자"].min(), daily_corr["일자"].max()
+                st.markdown(f"**R²={r2_corr:.3f} · 식: {eq_corr}**")
+                st.plotly_chart(fig_corr, use_container_width=True,
+                                config=dict(displaylogo=False), key="vf_corr_daily")
+                st.caption(md_safe_corr(
+                    f"일일 총공급량(MJ) vs 일평균기온 · 학습 연도 {fmt_years_corr(vf_train_years)} "
+                    f"({_d0:%Y-%m-%d}~{_d1:%Y-%m-%d}, {len(daily_corr):,}일) · "
+                    f"음영 = Poly-3 회귀선의 90% 신뢰구간 · 출처: 일별 기온/공급량 시트"))
 
         st.markdown("---")
         st.markdown(f"""
