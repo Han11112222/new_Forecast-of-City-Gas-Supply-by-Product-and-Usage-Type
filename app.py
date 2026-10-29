@@ -3185,15 +3185,9 @@ def render_factor_corr_matrix(merged, product):
     st.caption(f"분석 기간 {int(df['연'].min())}-{int(df.loc[df['연'].idxmin(), '월']):02d} ~ "
                f"{int(df['연'].max())}-{int(df.loc[df['연'].idxmax(), '월']):02d} · 표본 {len(df)}개월")
 
-    tab_p, tab_s = st.tabs(["Pearson (선형)", "Spearman (순위·비선형 단조)"])
     corr_p = df[cols].corr(method="pearson")
-    corr_s = df[cols].corr(method="spearman")
-    with tab_p:
-        st.plotly_chart(_heatmap(corr_p, height=600), use_container_width=True,
-                        config=dict(displaylogo=False), key=f"factor_heatmap_p_{product}")
-    with tab_s:
-        st.plotly_chart(_heatmap(corr_s, height=600), use_container_width=True,
-                        config=dict(displaylogo=False), key=f"factor_heatmap_s_{product}")
+    st.plotly_chart(_heatmap(corr_p, height=600), use_container_width=True,
+                    config=dict(displaylogo=False), key=f"factor_heatmap_p_{product}")
 
     # 공급량과의 상관 순위
     rank = pd.DataFrame({"Pearson r": corr_p["공급량"]}).drop(index="공급량")
@@ -3212,7 +3206,7 @@ def render_factor_corr_matrix(merged, product):
         rank_rows += f"<tr>{cells}</tr>"
     rank_head = "".join(f"<th>{h}</th>" for h in ["요인"] + list(rank.columns))
     st.markdown(
-        f'<table class="centered-table"><thead><tr>{rank_head}</tr></thead>'
+        f'<table class="centered-table" style="width:33%;"><thead><tr>{rank_head}</tr></thead>'
         f'<tbody>{rank_rows}</tbody></table>', unsafe_allow_html=True)
 
     # 핵심 요약 (한 줄에 한 문장)
