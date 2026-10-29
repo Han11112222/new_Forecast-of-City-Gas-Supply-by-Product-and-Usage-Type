@@ -3111,7 +3111,7 @@ _COL_KEYS = [
     ("고령인구수", "고령인구"), ("소비자물가지수", "물가"), ("청구전", "청구전"),
 ]
 
-FACTOR_ORDER = ["공급량", "평균기온", "최저기온", "최고기온", "체감온도", "HDD18",
+FACTOR_ORDER = ["공급량", "평균기온", "최저기온", "최고기온", "체감온도",
                 "유효일수", "총인구수", "세대수", "고령인구수", "인구순이동",
                 "소비자물가지수", "청구전"]
 
@@ -3137,8 +3137,6 @@ def load_factor_sheet():
     out["연"] = out["날짜"].dt.year.astype(int)
     out["월"] = out["날짜"].dt.month.astype(int)
     out = out.sort_values("날짜").drop_duplicates(["연", "월"]).reset_index(drop=True)
-    if "평균기온" in out.columns:
-        out["HDD18"] = (18.0 - out["평균기온"]).clip(lower=0)   # 난방도일 성격의 파생 요인
     return out, None
 
 
@@ -3169,8 +3167,7 @@ def _heatmap(corr, height=520):
 def render_factor_corr_matrix(merged, product):
     st.markdown("---")
     st.markdown("### 📐 상관도 매트릭스")
-    st.caption(f"요인별(기온 외 요인 포함) · 대상 상품: {product} 월별 공급량(MJ) × 요인 시트(기온·인구·세대·물가·청구전 등) · "
-               "HDD18 = max(0, 18℃ − 평균기온) 파생값")
+    st.caption(f"요인별(기온 외 요인 포함) · 대상 상품: {product} 월별 공급량(MJ) × 요인 시트(기온·인구·세대·물가·청구전 등)")
 
     factor_df, err = load_factor_sheet()
     if err or factor_df is None:
@@ -3208,24 +3205,25 @@ def render_factor_corr_matrix(merged, product):
     st.markdown("**공급량과의 상관 순위 (|Spearman ρ| 큰 순)**")
     st.markdown(show.to_html(index=False, classes="centered-table"), unsafe_allow_html=True)
 
-    # 요인 간 다중공선성 경고
-    others = [c for c in cols if c != "공급량"]
-    pairs = []
-    for i, a in enumerate(others):
-        for b in others[i + 1:]:
-            v = corr_p.loc[a, b]
-            if not np.isnan(v) and abs(v) >= 0.9:
-                pairs.append((abs(v), a, b, v))
-    pairs.sort(reverse=True)
+    # 핵심 요약 (한 줄에 한 문장)
+    temp_cols = [c for c in ["평균기온", "최저기온", "최고기온", "체감온도"] if c in cols]
+    non_temp = [c for c in rank.index if c not in temp_cols]
     top = rank.index[:3].tolist()
-    collinear = ", ".join(f"{a}↔{b}({v:+.2f})" for _, a, b, v in pairs[:5]) or "없음"
-    st.info(
-        f"**해석** · 공급량과 상관이 큰 요인은 **{', '.join(top)}** 순입니다. "
-        "공급량–기온은 U자형(난방·냉방)이라 Pearson이 낮게 나올 수 있어 Spearman·HDD18을 함께 봅니다. "
-        "총인구수·세대수·고령인구수·물가지수는 시간에 따라 완만히 변하는 추세 변수라, "
-        "공급량이 계절로 크게 출렁이는 것과는 별개로 '연도 간 수준 변화'를 설명하는 요인입니다. "
-        "즉 월별 상관이 낮아도 무의미한 것이 아니며, 반대로 추세끼리의 높은 상관은 우연일 수 있습니다. "
-        f"요인 간 상관이 0.9 이상인 쌍: {collinear} — 다변량 회귀에 함께 넣으면 공선성에 주의하세요.")
+    lines = [f"공급량과 상관이 가장 큰 요인은 {', '.join(top)} 순입니다."]
+    if non_temp:
+        nt = non_temp[0]
+        lines.append(f"기온 외 요인 중에서는 {nt}(r={corr_p.loc['공급량', nt]:+.2f})이 가장 높습니다.")
+    tt = [abs(corr_p.loc[x, y]) for i, x in enumerate(temp_cols) for y in temp_cols[i + 1:]]
+    if tt and min(tt) >= 0.9:
+        lines.append("기온 지표 4종은 서로 거의 같은 정보라 하나만 사용해도 충분합니다.")
+    nt_pairs = [(abs(corr_p.loc[x, y]), x, y, corr_p.loc[x, y])
+                for i, x in enumerate(non_temp) for y in non_temp[i + 1:]
+                if not np.isnan(corr_p.loc[x, y]) and abs(corr_p.loc[x, y]) >= 0.9]
+    nt_pairs.sort(reverse=True)
+    if nt_pairs:
+        _, x, y, v = nt_pairs[0]
+        lines.append(f"{x}↔{y}({v:+.2f})처럼 추세 요인끼리 상관이 높아 함께 넣으면 공선성에 주의해야 합니다.")
+    st.info("**해석**  \n" + "  \n".join(lines))
     return corr_p
 
 
