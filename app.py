@@ -3192,23 +3192,6 @@ def render_factor_corr_matrix(merged, product):
     # 공급량과의 상관 순위
     rank = pd.DataFrame({"Pearson r": corr_p["공급량"]}).drop(index="공급량")
     rank = rank.reindex(rank["Pearson r"].abs().sort_values(ascending=False).index)
-    st.markdown("**공급량과의 상관 순위 (|Pearson r| 큰 순)**")
-    st.caption("🟨 |상관계수| ≥ 0.9 는 하이라이트로 표시")
-    hl_style = ' style="background-color:#fde68a; font-weight:bold;"'
-    rank_rows = ""
-    for name, row in rank.iterrows():
-        cells = f"<td>{name}</td>"
-        for c in rank.columns:
-            v = row[c]
-            txt = "" if pd.isna(v) else f"{v:+.3f}"
-            hl = hl_style if (not pd.isna(v) and abs(v) >= 0.9) else ""
-            cells += f"<td{hl}>{txt}</td>"
-        rank_rows += f"<tr>{cells}</tr>"
-    rank_head = "".join(f"<th>{h}</th>" for h in ["요인"] + list(rank.columns))
-    st.markdown(
-        f'<table class="centered-table" style="width:33%;"><thead><tr>{rank_head}</tr></thead>'
-        f'<tbody>{rank_rows}</tbody></table>', unsafe_allow_html=True)
-
     # 핵심 요약 (한 줄에 한 문장)
     temp_cols = [c for c in ["평균기온", "최저기온", "최고기온", "체감온도"] if c in cols]
     non_temp = [c for c in rank.index if c not in temp_cols]
@@ -3227,7 +3210,29 @@ def render_factor_corr_matrix(merged, product):
     if nt_pairs:
         _, x, y, v = nt_pairs[0]
         lines.append(f"{x}↔{y}({v:+.2f})처럼 추세 요인끼리 상관이 높아 함께 넣으면 공선성에 주의해야 합니다.")
-    st.info("**해석**  \n" + "  \n".join(lines))
+
+    # 좌: 상관 순위표 / 우: 해석
+    col_tbl, col_txt = st.columns([1, 2])
+    with col_tbl:
+        st.markdown("**공급량과의 상관 순위 (|Pearson r| 큰 순)**")
+        st.caption("🟨 |상관계수| ≥ 0.9 는 하이라이트로 표시")
+        hl_style = ' style="background-color:#fde68a; font-weight:bold;"'
+        rank_rows = ""
+        for name, row in rank.iterrows():
+            strong = any((not pd.isna(row[c])) and abs(row[c]) >= 0.9 for c in rank.columns)
+            cells = f"<td{hl_style if strong else ''}>{name}</td>"
+            for c in rank.columns:
+                v = row[c]
+                txt = "" if pd.isna(v) else f"{v:+.3f}"
+                hl = hl_style if (not pd.isna(v) and abs(v) >= 0.9) else ""
+                cells += f"<td{hl}>{txt}</td>"
+            rank_rows += f"<tr>{cells}</tr>"
+        rank_head = "".join(f"<th>{h}</th>" for h in ["요인"] + list(rank.columns))
+        st.markdown(
+            f'<table class="centered-table" style="width:100%;"><thead><tr>{rank_head}</tr></thead>'
+            f'<tbody>{rank_rows}</tbody></table>', unsafe_allow_html=True)
+    with col_txt:
+        st.info("**해석**  \n" + "  \n".join(lines))
     return corr_p
 
 
