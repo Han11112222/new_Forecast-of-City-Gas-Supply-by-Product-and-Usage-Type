@@ -3211,28 +3211,33 @@ def render_factor_corr_matrix(merged, product):
         _, x, y, v = nt_pairs[0]
         lines.append(f"{x}↔{y}({v:+.2f})처럼 추세 요인끼리 상관이 높아 함께 넣으면 공선성에 주의해야 합니다.")
 
-    # 좌: 상관 순위표 / 우: 해석
+    # 좌: 상관 순위표 / 우: 해석 (해석 박스는 표 머리글~하이라이트 행 높이에 맞춤)
+    st.markdown("**공급량과의 상관 순위 (|Pearson r| 큰 순)**")
+    st.caption("🟨 |상관계수| ≥ 0.9 는 하이라이트로 표시")
+    hl_style = ' style="background-color:#fde68a; font-weight:bold;"'
+    rank_rows, n_strong = "", 0
+    for name, row in rank.iterrows():
+        strong = any((not pd.isna(row[c])) and abs(row[c]) >= 0.9 for c in rank.columns)
+        n_strong += int(strong)
+        cells = f"<td{hl_style if strong else ''}>{name}</td>"
+        for c in rank.columns:
+            v = row[c]
+            txt = "" if pd.isna(v) else f"{v:+.3f}"
+            hl = hl_style if (not pd.isna(v) and abs(v) >= 0.9) else ""
+            cells += f"<td{hl}>{txt}</td>"
+        rank_rows += f"<tr>{cells}</tr>"
+    rank_head = "".join(f"<th>{h}</th>" for h in ["요인"] + list(rank.columns))
+    box_h = 40 + 38.5 * max(n_strong, 3)   # 머리글 1행 + 하이라이트 행 수
     col_tbl, col_txt = st.columns([1, 2])
     with col_tbl:
-        st.markdown("**공급량과의 상관 순위 (|Pearson r| 큰 순)**")
-        st.caption("🟨 |상관계수| ≥ 0.9 는 하이라이트로 표시")
-        hl_style = ' style="background-color:#fde68a; font-weight:bold;"'
-        rank_rows = ""
-        for name, row in rank.iterrows():
-            strong = any((not pd.isna(row[c])) and abs(row[c]) >= 0.9 for c in rank.columns)
-            cells = f"<td{hl_style if strong else ''}>{name}</td>"
-            for c in rank.columns:
-                v = row[c]
-                txt = "" if pd.isna(v) else f"{v:+.3f}"
-                hl = hl_style if (not pd.isna(v) and abs(v) >= 0.9) else ""
-                cells += f"<td{hl}>{txt}</td>"
-            rank_rows += f"<tr>{cells}</tr>"
-        rank_head = "".join(f"<th>{h}</th>" for h in ["요인"] + list(rank.columns))
         st.markdown(
             f'<table class="centered-table" style="width:100%;"><thead><tr>{rank_head}</tr></thead>'
             f'<tbody>{rank_rows}</tbody></table>', unsafe_allow_html=True)
     with col_txt:
-        st.info("**해석**  \n" + "  \n".join(lines))
+        st.markdown(
+            f'<div style="background-color:rgba(28,131,225,0.1); color:rgb(0,66,128); border-radius:0.5rem; '
+            f'padding:1rem; min-height:{box_h:.0f}px; line-height:1.7; box-sizing:border-box;">'
+            f'<b>해석</b><br>' + "<br>".join(lines) + '</div>', unsafe_allow_html=True)
     return corr_p
 
 
