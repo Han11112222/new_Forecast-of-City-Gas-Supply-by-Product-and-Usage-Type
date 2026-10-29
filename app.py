@@ -3204,9 +3204,9 @@ def build_recent_avg_sample(merged, temp_monthly, product, end_year, max_n=6):
 def render_recent_temp_fit(merged, temp_monthly, product, end_year, render_table, max_n=6):
     """'학습 기간 추천' 바로 아래: 최근 N년 평균기온을 쓰면 적합도가 좋은가?
     render_table: app.py 의 _render_highlight_table 을 그대로 넘겨 같은 포맷으로 표시."""
-    st.markdown('<div class="sub">🌡️ 최근 N년 평균기온 적합도 추천</div>', unsafe_allow_html=True)
-    st.caption(f"각 월의 기온을 '직전 N년 동월 평균기온'으로 대체했을 때, 공급량과의 Poly-3 적합도(R²)를 비교 · "
-               f"{product} · {end_year}년까지의 실적 사용")
+    st.markdown('<div class="sub">② 직전 N년 평균기온 — 전체 기간 적합도</div>', unsafe_allow_html=True)
+    st.caption(f"각 월의 기온을 '직전 N년 동월 평균기온'으로 대체한 뒤 Poly-3를 다시 적합한 R²(설명력) · "
+               f"{product} · {end_year}년까지 전체 실적 사용")
 
     sample, nmax = build_recent_avg_sample(merged, temp_monthly, product, end_year, max_n)
     if sample is None or nmax < 1:
@@ -3245,14 +3245,6 @@ def render_recent_temp_fit(merged, temp_monthly, product, end_year, render_table
                       legend=dict(orientation="h", y=-0.25, x=0.5, xanchor="center"))
     st.plotly_chart(fig, use_container_width=True, config=dict(displaylogo=False))
 
-    # 상관도 매트릭스 (공급량 · 당해 실제기온 · N년 평균기온들)
-    cols = ["공급량", "당해 실제기온"] + [f"{n}년평균" for n in range(1, nmax + 1)]
-    corr = sample[cols].corr(method="pearson")
-    corr.columns = corr.index = ["공급량", "당해 실제기온"] + [f"직전{n}년 평균기온" for n in range(1, nmax + 1)]
-    st.markdown("**📐 상관도 매트릭스 (공급량 ↔ 기온 산출 방식)**")
-    st.plotly_chart(_heatmap(corr, height=440), use_container_width=True,
-                    config=dict(displaylogo=False), key=f"recent_temp_heatmap_{product}_{end_year}")
-
     best = res.iloc[0]
     diff = best["R2"] - r2_actual
     st.info(
@@ -3269,8 +3261,8 @@ def render_recent_temp_fit(merged, temp_monthly, product, end_year, render_table
 # ══════════════════════════════════════════════
 def render_factor_corr_matrix(merged, product):
     st.markdown("---")
-    st.markdown('<div class="sub">🧩 요인별 상관도 매트릭스 (기온 외 요인 포함)</div>', unsafe_allow_html=True)
-    st.caption(f"대상 상품: {product} 월별 공급량(MJ) × 요인 시트(기온·인구·세대·물가·청구전 등) · "
+    st.markdown("### 📐 상관도 매트릭스")
+    st.caption(f"요인별(기온 외 요인 포함) · 대상 상품: {product} 월별 공급량(MJ) × 요인 시트(기온·인구·세대·물가·청구전 등) · "
                "HDD18 = max(0, 18℃ − 평균기온) 파생값")
 
     factor_df, err = load_factor_sheet()
@@ -3421,11 +3413,12 @@ D~O열: 상품별 1~12월 실적 추정값
 
     # ═══ TAB 1: 학습 기간 추천 ═══
     if selected_menu == menu_options[0]:
-        st.markdown("### 🎯 학습 기간 추천")
+        st.markdown("### 🎯 학습 데이터 기간 추천")
         st.markdown("""
         <div class="info-box">
-        <b>Poly-3 학습 기간</b>: 기온 고정(실적연도 실제 기온) · Poly-3 학습 기간만 변경 → 예측 vs 실적 R²<br>
-        <b>기온 학습 기간</b>: Poly-3 고정(최근 3년 학습) · 기온만 과거 N년 평균으로 변경 → 예측 vs 실적 R²
+        <b>📚 학습기간 추천</b>: 기온 고정(실적연도 실제 기온) · Poly-3 학습 기간만 변경 → 예측 vs 실적 R²<br>
+        <b>🌡️ 기온 설정 추천</b>: 예측에 쓸 기온을 과거 N년 평균으로 잡을 때 어느 N이 좋은지 (실적 검증 + 전체 기간 적합도)<br>
+        <b>📐 상관도 매트릭스</b>: 공급량과 기온·인구·세대·물가 등 요인 간 상관관계
         </div>
         """, unsafe_allow_html=True)
 
@@ -3439,7 +3432,7 @@ D~O열: 상품별 1~12월 실적 추정값
                 index=len(years_all) - 1, key="rec_end_year")
 
         if st.button("🔎 추천 구간 계산", type="primary", key="btn_rec"):
-            st.markdown('<div class="sub">📊 Poly-3 학습 기간 추천</div>', unsafe_allow_html=True)
+            st.markdown("### 📚 학습기간 추천")
             st.caption(f"기온 고정: {rec_end_year}년 실제 월별 기온 사용 · Poly-3 학습 기간만 변경")
             rec_df = recommend_train_ranges(merged, rec_product, end_year=rec_end_year)
             rec_all = rec_df.copy()
@@ -3514,7 +3507,14 @@ D~O열: 상품별 1~12월 실적 추정값
             st.plotly_chart(fig_r, use_container_width=True,
                             config=dict(scrollZoom=True, displaylogo=False))
 
-            st.markdown('<div class="sub">🌡️ 기온 학습 기간 추천</div>', unsafe_allow_html=True)
+            if not rec_df.empty:
+                best_poly = rec_df.iloc[0]
+                st.success(f"📌 **학습기간 추천**: Poly-3 학습 기간 **{best_poly['기간']}** "
+                           f"({best_poly['추천연도']}, R²={best_poly['R2']:.4f})")
+
+            st.markdown("---")
+            st.markdown("### 🌡️ 기온 설정 추천")
+            st.markdown('<div class="sub">① 과거 N년 평균기온 — 실적연도 검증 (Poly-3 고정)</div>', unsafe_allow_html=True)
             st.caption(f"Poly-3 고정: 최근 3년 학습 · 기온만 과거 N년 월별 평균으로 변경하여 {rec_end_year}년 실적과 비교")
             temp_rec = recommend_temp_period(merged, rec_product, temp_daily, end_year=rec_end_year)
             if not temp_rec.empty:
@@ -3531,13 +3531,13 @@ D~O열: 상품별 1~12월 실적 추정값
             # ── 최근 N년 평균기온 적합도 + 상관도 매트릭스 ──
             render_recent_temp_fit(merged, temp_monthly, rec_product, rec_end_year,
                                    _render_highlight_table)
+            st.info(
+                f"**①과 ②의 차이** · ①은 Poly-3를 직전 3년으로 고정 학습한 뒤 {rec_end_year}년 실적 몇 개월에 "
+                "대한 **예측 성능(사후 검증)**, ②는 전체 기간의 매월 기온을 '직전 N년 평균'으로 바꿔 Poly-3를 "
+                "다시 적합한 **설명력(R²)**입니다. 표본 수·학습 방식·후보 N이 달라 R² 수치는 서로 다르며, "
+                "두 표에서 같은 N의 순위가 일관되면 그 N을 신뢰할 수 있습니다.")
 
-            if not rec_df.empty:
-                best_poly = rec_df.iloc[0]
-                st.success(f"📌 **종합 추천**: Poly-3 학습 기간 **{best_poly['기간']}** "
-                           f"({best_poly['추천연도']}, R²={best_poly['R2']:.4f})")
-
-            # ── 요인별 상관도 매트릭스 (가장 하단) ──
+            # ── 상관도 매트릭스 (가장 하단) ──
             render_factor_corr_matrix(merged, rec_product)
 
     # ═══ TAB 2: 공급량 예측 검증 ═══
