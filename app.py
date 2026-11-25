@@ -3273,10 +3273,10 @@ def main():
         menu_options = [
             "🎯 학습 데이터 기간 추천",
             "🔍 공급량 예측 검증",
+            "🔬 개별난방용 Simulation",
             "📈 공급량 예측",
             "🧊 판매량 예측 (냉방용)",
             "⚖️ 판매량 vs 공급량",
-            "🔬 개별난방용 Simulation",
             "🧊 냉방용 Simulation",
         ]
         selected_menu = st.radio(
@@ -3680,6 +3680,12 @@ D~O열: 상품별 1~12월 실적 추정값
         4가지 모델 예측을 비교한 뒤, 하단에서 <b>모델을 선택</b>하면 Best/Conservative 시나리오도 확인할 수 있습니다.
         </div>
         """, unsafe_allow_html=True)
+
+        # 미래 공급량 예측 활성화 버튼 (기본값: 비활성화)
+        vf_future_enabled = st.toggle("📈 미래 공급량 예측 활성화", value=False, key="vf_future_enabled")
+        if not vf_future_enabled:
+            st.caption("👆 활성화하면 기온 시나리오·예측 기간 설정과 미래 공급량 예측 기능이 표시됩니다.")
+            st.stop()
 
         st.markdown('<div class="sub">🌡️ 기온 시나리오 선택</div>', unsafe_allow_html=True)
         vf_temp_scenarios = st.multiselect(
@@ -4163,7 +4169,7 @@ D~O열: 상품별 1~12월 실적 추정값
                 st.markdown("---")
 
     # ═══ TAB 3: 공급량 예측 ═══
-    elif selected_menu == menu_options[2]:
+    elif selected_menu == menu_options[3]:
         st.markdown("### 📈 공급량 예측 (Poly-3)")
         c1, c2 = st.columns(2)
         with c1:
@@ -4335,18 +4341,18 @@ D~O열: 상품별 1~12월 실적 추정값
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     # ═══ TAB 4: 판매량 예측 (냉방용) ═══
-    elif selected_menu == menu_options[3]:
+    elif selected_menu == menu_options[4]:
         render_cooling_analysis()
 
     # ═══ TAB 5: 판매량 vs 공급량 ═══
-    elif selected_menu == menu_options[4]:
+    elif selected_menu == menu_options[5]:
         if sales_df is not None and not sales_df.empty:
             render_sales_vs_supply(supply_df, sales_df)
         else:
             st.error("판매량 데이터(Sheet3)를 불러오지 못해 이 탭을 사용할 수 없습니다.")
 
     # ═══ TAB 6: 개별난방용 Simulation ═══
-    elif selected_menu == menu_options[5]:
+    elif selected_menu == menu_options[2]:
         render_simulation_tab(merged, temp_monthly, supply_df, available_products, years_all)
 
     # ═══ TAB 7: 냉방용 Simulation ═══
